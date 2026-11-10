@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Start the DailyVerse server in the background if it isn't already running.
-# Logs: /tmp/dailyverse.log   Force restart: bash .devcontainer/start.sh --restart
-cd "$(dirname "$0")/.."
+# Logs: .cache/dailyverse.log   Force restart: bash .devcontainer/start.sh --restart
+cd "$(dirname "$0")/.." || exit 1
+LOG="$PWD/.cache/dailyverse.log"; mkdir -p "$(dirname "$LOG")"
 if [ "$1" = "--restart" ]; then pkill -f "tsx server.ts" 2>/dev/null || true; sleep 1; fi
 if pgrep -f "tsx server.ts" >/dev/null; then
-  echo "DailyVerse already running on port 3000 - logs: tail -f /tmp/dailyverse.log"
+  echo "DailyVerse already running on port 3000 - logs: tail -f $LOG"
   exit 0
 fi
-[ -d node_modules ] || { echo "node_modules missing - running setup first"; bash .devcontainer/setup.sh >> /tmp/dailyverse-setup.log 2>&1; }
-# setsid -f forks into a new session so Codespaces doesn't reap it when the lifecycle command exits.
-setsid -f bash -c 'npm run dev >> /tmp/dailyverse.log 2>&1 < /dev/null'
-echo "DailyVerse starting on port 3000 - logs: tail -f /tmp/dailyverse.log"
+[ -d node_modules ] || bash .devcontainer/setup.sh >> "$LOG" 2>&1
+# Double-detach (nohup + setsid + &) so Codespaces doesn't reap the server when this lifecycle command exits.
+nohup setsid bash -c "echo \"[\$(date -u +%FT%TZ)] starting\" >> '$LOG'; exec npm run dev >> '$LOG' 2>&1" < /dev/null > /dev/null 2>&1 &
+sleep 3
+echo "DailyVerse starting on port 3000 - logs: tail -f $LOG"
