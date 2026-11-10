@@ -38,4 +38,5 @@ if [ -x .indic-parler-venv/bin/python3 ]; then
     curl -s -o /dev/null -m 900 -X POST -H "Content-Type: application/json" \
       -d "{\"text\":\"கர்த்தர் நல்லவர்.\",\"reference\":\"warmup\"}" localhost:3000/api/verse-audio
   ' < /dev/null > /dev/null 2>&1 &
+  sleep 3  # give the detached warm-up time to leave this session before the lifecycle command exits
 fi
