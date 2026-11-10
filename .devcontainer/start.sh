@@ -18,6 +18,9 @@ if [ -r "$SECRETS_FILE" ]; then
     [ -z "${!BASH_REMATCH[1]}" ] && export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
   done < "$SECRETS_FILE"
 fi
+# No Ollama in Codespaces: use Claude only, so a Claude failure (e.g. low credit balance) is reported as-is
+# instead of as a misleading "Could not reach Ollama at localhost:11434". Override via a LLM_PROVIDER secret.
+export LLM_PROVIDER="${LLM_PROVIDER:-anthropic}"
 # Double-detach (nohup + setsid + &) so Codespaces doesn't reap the server when this lifecycle command exits.
 nohup setsid bash -c "echo \"[\$(date -u +%FT%TZ)] starting\" >> '$LOG'; exec npm run dev >> '$LOG' 2>&1" < /dev/null > /dev/null 2>&1 &
 sleep 3

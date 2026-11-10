@@ -12,6 +12,10 @@ if [ ! -x .piper-venv/bin/python3 ]; then
   .piper-venv/bin/pip install --quiet --upgrade pip
   .piper-venv/bin/pip install --quiet "piper-tts==1.7.0"
 fi
+# scripts/piper_synthesize.py loads espeak data via the short path .piper-venv/piper (works around the
+# wheel's long-path bug - see that script's header), so mirror the Mac's symlink to the installed package.
+PIPER_PKG=$(.piper-venv/bin/python3 -c 'import os, piper; print(os.path.dirname(piper.__file__))' 2>/dev/null)
+[ -n "$PIPER_PKG" ] && ln -sfn "${PIPER_PKG#"$PWD/.piper-venv/"}" .piper-venv/piper
 
 mkdir -p .piper-voices
 BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main
