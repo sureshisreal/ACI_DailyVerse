@@ -12,6 +12,7 @@ import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import { pipeline, env as transformersEnv } from '@xenova/transformers';
 import { verseRouter } from './server/routes/verse.routes';
 import { startInstagramSync } from './server/services/instagramSync.service';
+import { keepAliveJson } from './server/utils/keepAliveJson';
 
 // Configure FFmpeg and FFprobe
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -25,6 +26,9 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
+// Slow POSTs (Tamil TTS, video, Claude + images) would otherwise be cut off by idle-timeout proxies
+// such as GitHub Codespaces port forwarding - see server/utils/keepAliveJson.ts.
+app.use('/api', (req, res, next) => (req.method === 'POST' ? keepAliveJson(req, res, next) : next()));
 app.use('/api', verseRouter);
 
 // --- Caption alignment (open-source Whisper via @xenova/transformers, runs fully locally/offline) ---

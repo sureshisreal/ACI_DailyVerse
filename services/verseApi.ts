@@ -45,8 +45,11 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body)
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new ApiError(data.error || `HTTP error! status: ${response.status}`, data);
+  // __httpStatus: the server's real status when a keep-alive already committed a 200 for a slow
+  // request (see server/utils/keepAliveJson.ts).
+  const status = typeof data.__httpStatus === 'number' ? data.__httpStatus : response.status;
+  if (!response.ok || status >= 400) {
+    throw new ApiError(data.error || `HTTP error! status: ${status}`, data);
   }
   return data;
 }
