@@ -105,6 +105,7 @@ async function callOllama(call: ModelCall): Promise<string> {
   const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS) || 600_000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const abortMessage = () => `Local model (${model}) timed out after ${Math.round(timeoutMs / 1000)}s`;
   let res: Response;
   try {
     res = await fetch(`${baseUrl}/api/chat`, {
@@ -113,7 +114,10 @@ async function callOllama(call: ModelCall): Promise<string> {
       signal: controller.signal,
       body: JSON.stringify({
         model,
-        stream: false,
+        // Streamed so bytes arrive continuously: with stream:false nothing comes back until the whole
+        // answer is generated, and on CPU-only hosts (e.g. Codespaces) that can exceed Node fetch's
+        // built-in 5-minute headers timeout ("fetch failed") long before OLLAMA_TIMEOUT_MS.
+        stream: true,
         ...(call.json ? { format: 'json' } : {}),
         messages: [
           { role: 'system', content: call.systemPrompt },
@@ -123,20 +127,51 @@ async function callOllama(call: ModelCall): Promise<string> {
       }),
     });
   } catch (err: any) {
-    throw new Error(err?.name === 'AbortError'
-      ? `Local model (${model}) timed out after ${Math.round(timeoutMs / 1000)}s`
-      : `Could not reach Ollama at ${baseUrl} - is it running? (${err?.message || err})`);
-  } finally {
     clearTimeout(timeoutId);
+    throw new Error(err?.name === 'AbortError'
+      ? abortMessage()
+      : `Could not reach Ollama at ${baseUrl} - is it running? (${err?.message || err})`);
   }
   if (!res.ok) {
+    clearTimeout(timeoutId);
     const body = await res.text().catch(() => '');
     throw new Error(`Ollama returned ${res.status}${res.status === 404 ? ` (model not installed - run: ollama pull ${model})` : ''}: ${body.slice(0, 200)}`);
   }
-  const data: any = await res.json();
-  const text = String(data?.message?.content ?? '').trim();
+
+  // NDJSON stream: one {"message":{"content":"..."},"done":false} object per line, then a final
+  // {"done":true,"done_reason":...}. Accumulate the content pieces.
+  let text = '';
+  let doneReason: string | undefined;
+  try {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const handleLine = (line: string) => {
+      if (!line.trim()) return;
+      const chunk = JSON.parse(line);
+      if (chunk.error) throw new Error(`Ollama error: ${String(chunk.error).slice(0, 200)}`);
+      text += chunk?.message?.content ?? '';
+      if (chunk.done) doneReason = chunk.done_reason;
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        handleLine(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    handleLine(buffer + decoder.decode());
+  } catch (err: any) {
+    throw err?.name === 'AbortError' ? new Error(abortMessage()) : err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  text = text.trim();
   if (!text) throw new Error(`Local model (${model}) returned no text`);
-  if (data?.done_reason === 'length') {
+  if (doneReason === 'length') {
     throw new Error(`Local model (${model}) response was truncated (hit its output limit before finishing)`);
   }
   return text;

@@ -18,9 +18,20 @@ if [ -r "$SECRETS_FILE" ]; then
     [ -z "${!BASH_REMATCH[1]}" ] && export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
   done < "$SECRETS_FILE"
 fi
-# No Ollama in Codespaces: use Claude only, so a Claude failure (e.g. low credit balance) is reported as-is
-# instead of as a misleading "Could not reach Ollama at localhost:11434". Override via a LLM_PROVIDER secret.
-export LLM_PROVIDER="${LLM_PROVIDER:-anthropic}"
+# LLM provider: if Ollama is installed (bash .devcontainer/setup-ollama.sh), start it and use "auto"
+# (Claude first, local model when Claude fails, e.g. no credits). Without it, use Claude only, so a
+# Claude failure is reported as-is instead of as "Could not reach Ollama at localhost:11434".
+# Override either via LLM_PROVIDER / OLLAMA_MODEL secrets.
+if command -v ollama >/dev/null; then
+  if ! curl -s -o /dev/null localhost:11434; then
+    OLLAMA_KEEP_ALIVE=30m nohup setsid ollama serve >> "$PWD/.cache/ollama.log" 2>&1 < /dev/null &
+    for i in $(seq 1 20); do curl -s -o /dev/null localhost:11434 && break; sleep 1; done
+  fi
+  export LLM_PROVIDER="${LLM_PROVIDER:-auto}"
+  export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma3:4b}"
+else
+  export LLM_PROVIDER="${LLM_PROVIDER:-anthropic}"
+fi
 # Keep the Tamil TTS model loaded for 30 idle minutes (= the codespace idle timeout), not the default 10.
 export INDIC_PARLER_WORKER_IDLE_MIN="${INDIC_PARLER_WORKER_IDLE_MIN:-30}"
 # Double-detach (nohup + setsid + &) so Codespaces doesn't reap the server when this lifecycle command exits.
