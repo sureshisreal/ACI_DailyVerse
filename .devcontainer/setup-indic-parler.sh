@@ -11,4 +11,7 @@ CPU_INDEX=(--index-url https://download.pytorch.org/whl/cpu)
 .indic-parler-venv/bin/pip install --quiet "${CPU_INDEX[@]}" "${TORCH_PAIR[@]}"
 .indic-parler-venv/bin/pip install --quiet "transformers==4.46.1" "git+https://github.com/huggingface/parler-tts.git"
 .indic-parler-venv/bin/pip install --quiet "${CPU_INDEX[@]}" "${TORCH_PAIR[@]}"
+# sentencepiece 0.2.3+ needs protobuf>=5.26 (google.protobuf.runtime_version), but descript-audiotools
+# pins protobuf<5 - so keep the 0.2.2 that the working Mac install uses.
+.indic-parler-venv/bin/pip install --quiet "sentencepiece==0.2.2"
 echo "✅ Indic-Parler installed - restart the app (bash .devcontainer/start.sh)"
