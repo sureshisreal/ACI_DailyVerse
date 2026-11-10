@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# (Re)start the DailyVerse server in the background. Logs: /tmp/dailyverse.log
+# Start the DailyVerse server in the background if it isn't already running.
+# Logs: /tmp/dailyverse.log   Force restart: bash .devcontainer/start.sh --restart
 cd "$(dirname "$0")/.."
-pkill -f "tsx server.ts" 2>/dev/null || true
-setsid nohup npm run dev > /tmp/dailyverse.log 2>&1 < /dev/null &
+if [ "$1" = "--restart" ]; then pkill -f "tsx server.ts" 2>/dev/null || true; sleep 1; fi
+if pgrep -f "tsx server.ts" >/dev/null; then
+  echo "DailyVerse already running on port 3000 - logs: tail -f /tmp/dailyverse.log"
+  exit 0
+fi
+[ -d node_modules ] || { echo "node_modules missing - running setup first"; bash .devcontainer/setup.sh >> /tmp/dailyverse-setup.log 2>&1; }
+setsid nohup npm run dev >> /tmp/dailyverse.log 2>&1 < /dev/null &
+disown || true
 echo "DailyVerse starting on port 3000 - logs: tail -f /tmp/dailyverse.log"

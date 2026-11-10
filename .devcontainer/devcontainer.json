@@ -4,7 +4,8 @@
   "name": "DailyVerse",
   "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
   "features": {
-    "ghcr.io/devcontainers/features/python:1": { "version": "3.11" }
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.11" },
+    "ghcr.io/devcontainers/features/sshd:1": { "version": "latest" }
   },
   "hostRequirements": { "cpus": 4, "memory": "16gb" },
   "forwardPorts": [3000],
@@ -22,5 +23,7 @@
   // One-time setup when the codespace is created (npm deps + Piper TTS voices).
   "postCreateCommand": "bash .devcontainer/setup.sh",
   // Every start/resume: launch the app in the background so a phone user only has to open the port.
-  "postStartCommand": "bash .devcontainer/start.sh"
+  "postStartCommand": "bash .devcontainer/start.sh",
+  // Also (re)start when the codespace is opened in a browser, in case the background start was reaped.
+  "postAttachCommand": "bash .devcontainer/start.sh"
 }
