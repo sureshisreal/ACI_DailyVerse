@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.cache/
+.env
+*.log
+
+# Generated at runtime - Claude analysis cache, Pollinations image cache, saved daily posters
+cache/
+output/
+
+# Local open-source model installs (large binaries, not source)
+.piper-venv/
+.piper-voices/
+.mms-tts-venv/
+.indic-parler-venv/
+
+.env.bak
+
+# Secrets & local tooling
+google/client_secret.json
+google/venv/
+google/*token*.json
+.claude/
+.kilo/
+.DS_Store
+/path

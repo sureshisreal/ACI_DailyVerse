@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>The Apostolic Church of India - Daily Verse Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Great+Vibes&family=Dancing+Script:wght@400;700&family=Lato:wght@300;400;700;900&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;0,900;1,400;1,600;1,700;1,900&family=Lora:ital,wght@0,400;0,700;1,400;1,600;1,700&family=Montserrat:wght@400;500;700;800;900&family=Cormorant+Garamond:ital,wght@0,400;0,700;1,400;1,600;1,700&family=Noto+Sans+Tamil:wght@400;500;700;800;900&family=Noto+Serif+Tamil:wght@400;700;900&family=Noto+Sans+Telugu:wght@400;500;700;800;900&family=Noto+Serif+Telugu:wght@400;700;900&family=Arima+Madurai:wght@400;700;800;900&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              serif: ['"Playfair Display"', '"Lora"', '"Cormorant Garamond"', '"Noto Serif Tamil"', '"Noto Serif Telugu"', 'serif'],
+              sans: ['Lato', 'Montserrat', '"Noto Sans Tamil"', '"Noto Sans Telugu"', 'sans-serif'],
+              display: ['Cinzel', 'Montserrat', '"Noto Serif Tamil"', '"Noto Serif Telugu"', 'serif'],
+              script: ['"Great Vibes"', '"Dancing Script"', '"Noto Serif Tamil"', '"Noto Serif Telugu"', 'cursive'],
+            },
+          },
+        },
+      }
+    </script>
+    <style>
+      /* Hide scrollbar for Chrome, Safari and Opera */
+      .no-scrollbar::-webkit-scrollbar {
+          display: none;
+      }
+      /* Hide scrollbar for IE, Edge and Firefox */
+      .no-scrollbar {
+          -ms-overflow-style: none;  /* IE and Edge */
+          scrollbar-width: none;  /* Firefox */
+      }
+    </style>
+  </head>
+  <body class="bg-stone-900 text-stone-100 antialiased min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
