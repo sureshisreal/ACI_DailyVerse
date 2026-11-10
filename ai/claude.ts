@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
+import http from 'node:http';
+import https from 'node:https';
 
 // Cheapest current model ($1 / $5 per MTok). Override with CLAUDE_MODEL (e.g. claude-sonnet-5-5,
 // claude-opus-5-5, claude-fable-5-1) for higher quality at higher cost.
@@ -103,78 +105,79 @@ async function callOllama(call: ModelCall): Promise<string> {
   const baseUrl = (process.env.OLLAMA_URL || 'http://localhost:11434').replace(/\/$/, '');
   const model = process.env.OLLAMA_MODEL || OLLAMA_DEFAULT_MODEL;
   const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS) || 600_000;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const abortMessage = () => `Local model (${model}) timed out after ${Math.round(timeoutMs / 1000)}s`;
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        // Streamed so bytes arrive continuously: with stream:false nothing comes back until the whole
-        // answer is generated, and on CPU-only hosts (e.g. Codespaces) that can exceed Node fetch's
-        // built-in 5-minute headers timeout ("fetch failed") long before OLLAMA_TIMEOUT_MS.
-        stream: true,
-        ...(call.json ? { format: 'json' } : {}),
-        messages: [
-          { role: 'system', content: call.systemPrompt },
-          { role: 'user', content: call.userText, ...(call.image ? { images: [call.image.base64] } : {}) },
-        ],
-        options: { num_predict: Math.max(1024, call.maxTokens * 3), num_ctx: 16384, temperature: 0.7 },
-      }),
-    });
-  } catch (err: any) {
-    clearTimeout(timeoutId);
-    throw new Error(err?.name === 'AbortError'
-      ? abortMessage()
-      : `Could not reach Ollama at ${baseUrl} - is it running? (${err?.message || err})`);
-  }
-  if (!res.ok) {
-    clearTimeout(timeoutId);
-    const body = await res.text().catch(() => '');
-    throw new Error(`Ollama returned ${res.status}${res.status === 404 ? ` (model not installed - run: ollama pull ${model})` : ''}: ${body.slice(0, 200)}`);
-  }
+  const payload = JSON.stringify({
+    model,
+    stream: true,
+    ...(call.json ? { format: 'json' } : {}),
+    messages: [
+      { role: 'system', content: call.systemPrompt },
+      { role: 'user', content: call.userText, ...(call.image ? { images: [call.image.base64] } : {}) },
+    ],
+    options: { num_predict: Math.max(1024, call.maxTokens * 3), num_ctx: 16384, temperature: 0.7 },
+  });
 
-  // NDJSON stream: one {"message":{"content":"..."},"done":false} object per line, then a final
-  // {"done":true,"done_reason":...}. Accumulate the content pieces.
-  let text = '';
-  let doneReason: string | undefined;
-  try {
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    const handleLine = (line: string) => {
-      if (!line.trim()) return;
-      const chunk = JSON.parse(line);
-      if (chunk.error) throw new Error(`Ollama error: ${String(chunk.error).slice(0, 200)}`);
-      text += chunk?.message?.content ?? '';
-      if (chunk.done) doneReason = chunk.done_reason;
-    };
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        handleLine(buffer.slice(0, nl));
-        buffer = buffer.slice(nl + 1);
+  // node:http rather than fetch: fetch (undici) aborts if no response headers arrive within 5 minutes,
+  // and Ollama sends none until a request actually starts generating. On CPU-only hosts (e.g.
+  // Codespaces) Ollama runs one request at a time, so a request queued behind others - or a long
+  // prompt's prefill - easily waits past that and was cut off ("client closing the connection").
+  // Here only OLLAMA_TIMEOUT_MS bounds the call. Streamed (NDJSON) so long answers arrive piecewise.
+  const url = new URL('/api/chat', baseUrl);
+  const transport = url.protocol === 'https:' ? https : http;
+  const { text, doneReason } = await new Promise<{ text: string; doneReason?: string }>((resolve, reject) => {
+    let settled = false;
+    const fail = (err: Error) => { if (!settled) { settled = true; clearTimeout(timer); req.destroy(); reject(err); } };
+    const timer = setTimeout(
+      () => fail(new Error(`Local model (${model}) timed out after ${Math.round(timeoutMs / 1000)}s`)),
+      timeoutMs
+    );
+    const req = transport.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, (res) => {
+      res.setEncoding('utf8');
+      if ((res.statusCode || 0) >= 400) {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => fail(new Error(`Ollama returned ${res.statusCode}${res.statusCode === 404 ? ` (model not installed - run: ollama pull ${model})` : ''}: ${body.slice(0, 200)}`)));
+        return;
       }
-    }
-    handleLine(buffer + decoder.decode());
-  } catch (err: any) {
-    throw err?.name === 'AbortError' ? new Error(abortMessage()) : err;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-  text = text.trim();
-  if (!text) throw new Error(`Local model (${model}) returned no text`);
+      // One {"message":{"content":"..."},"done":false} object per line, then {"done":true,"done_reason":...}.
+      let acc = '';
+      let reason: string | undefined;
+      let buffer = '';
+      const handleLine = (line: string) => {
+        if (!line.trim()) return;
+        const chunk = JSON.parse(line);
+        if (chunk.error) throw new Error(`Ollama error: ${String(chunk.error).slice(0, 200)}`);
+        acc += chunk?.message?.content ?? '';
+        if (chunk.done) reason = chunk.done_reason;
+      };
+      res.on('data', (c: string) => {
+        buffer += c;
+        let nl: number;
+        try {
+          while ((nl = buffer.indexOf('\n')) !== -1) { handleLine(buffer.slice(0, nl)); buffer = buffer.slice(nl + 1); }
+        } catch (err: any) { fail(err); }
+      });
+      res.on('end', () => {
+        if (settled) return;
+        try { handleLine(buffer); } catch (err: any) { return fail(err); }
+        settled = true;
+        clearTimeout(timer);
+        resolve({ text: acc, doneReason: reason });
+      });
+      res.on('error', (err) => fail(err));
+    });
+    req.on('error', (err) => fail(new Error(`Could not reach Ollama at ${baseUrl} - is it running? (${err.message})`)));
+    req.end(payload);
+  });
+
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error(`Local model (${model}) returned no text`);
   if (doneReason === 'length') {
     throw new Error(`Local model (${model}) response was truncated (hit its output limit before finishing)`);
   }
-  return text;
+  return trimmed;
 }
 
 async function callClaudeWithContent(

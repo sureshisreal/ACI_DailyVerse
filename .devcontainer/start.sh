@@ -29,6 +29,9 @@ if command -v ollama >/dev/null; then
   fi
   export LLM_PROVIDER="${LLM_PROVIDER:-auto}"
   export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma3:4b}"
+  # Ollama on CPU handles one request at a time; a generation run sends several at once, so a queued
+  # request can wait behind others well past the app's default 10-minute limit.
+  export OLLAMA_TIMEOUT_MS="${OLLAMA_TIMEOUT_MS:-1800000}"
 else
   export LLM_PROVIDER="${LLM_PROVIDER:-anthropic}"
 fi
