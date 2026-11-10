@@ -62,8 +62,10 @@ const OLLAMA_DEFAULT_MODEL = 'gemma3:12b';
 const GEMINI_DEFAULT_MODELS = 'gemini-3.5-flash,gemini-3.1-flash-lite,gemini-flash-latest,gemini-flash-lite-latest';
 const MODEL_COOLDOWN_MINUTES = 3;
 const modelCooldownUntil: Record<string, number> = {};
-// Preferred Groq model (vision + multilingual); if it isn't live, one is picked from /models.
-const GROQ_PREFERRED_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+// Preferred Groq model: in testing it used correct Christian Tamil/Telugu terms (கர்த்தர், దేవుడు)
+// where qwen3.8 did not. Text-only - image calls get a 400 and move on to the next provider.
+// If it isn't live, another is picked from /models.
+const GROQ_PREFERRED_MODEL = 'openai/gpt-oss-120b';
 const PROVIDER_COOLDOWN_MINUTES = 10;
 const cooldownUntil: Partial<Record<ProviderName, number>> = {};
 
@@ -248,7 +250,7 @@ async function pickGroqModel(): Promise<string> {
     const ids: string[] = ((await res.json())?.data || []).filter((m: any) => m?.active !== false).map((m: any) => String(m.id));
     groqModel = ids.find((id) => id === GROQ_PREFERRED_MODEL)
       || ids.find((id) => /llama-4/i.test(id))
-      || ids.find((id) => /llama|gpt-oss|qwen|kimi/i.test(id) && !/guard|whisper|tts|prompt/i.test(id))
+      || ids.find((id) => /gpt-oss|llama|qwen|kimi/i.test(id) && !/guard|safeguard|whisper|tts|prompt|orpheus/i.test(id))
       || GROQ_PREFERRED_MODEL;
     console.log(`[llm] Groq model: ${groqModel}`);
     return groqModel;
