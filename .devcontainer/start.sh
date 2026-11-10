@@ -9,6 +9,15 @@ if pgrep -f "tsx server.ts" >/dev/null; then
   exit 0
 fi
 [ -d node_modules ] || bash .devcontainer/setup.sh >> "$LOG" 2>&1
+# Codespaces secrets aren't in the environment of SSH sessions (e.g. `gh codespace ssh` restarts),
+# so load any missing ones from the Codespaces-managed secrets file. Values are read literally (no eval).
+SECRETS_FILE=/workspaces/.codespaces/shared/.env
+if [ -r "$SECRETS_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    [ -z "${!BASH_REMATCH[1]}" ] && export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+  done < "$SECRETS_FILE"
+fi
 # Double-detach (nohup + setsid + &) so Codespaces doesn't reap the server when this lifecycle command exits.
 nohup setsid bash -c "echo \"[\$(date -u +%FT%TZ)] starting\" >> '$LOG'; exec npm run dev >> '$LOG' 2>&1" < /dev/null > /dev/null 2>&1 &
 sleep 3
