@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import { CheckCircle2, Circle, Loader2, XCircle, Download, UploadCloud, RefreshCw } from 'lucide-react';
 import ministryLogoUrl from './ACI.png';
 import Button from './Button';
+import VersePlanPicker, { getPlanEntry, type VersePlanEntry } from './VersePlanPicker';
 import type { PosterDesign, VerseAnalysis } from '../types';
 import {
   lookupVerse,
@@ -1345,6 +1346,14 @@ const DailyVerseGenerator: React.FC = () => {
     return <Circle className={`${size} text-stone-600`} />;
   };
 
+  // Verse plan (data/verse-plan-2026-oct-dec.json): picking a day fills both the date and the reference.
+  const plannedForDate = getPlanEntry(date);
+  const handlePickPlanEntry = (entry: VersePlanEntry) => {
+    setDate(entry.date);
+    setReference(entry.reference);
+    setBulkMode(false);
+  };
+
   return (
     <div className="max-w-xl mx-auto p-6 bg-stone-900/40 rounded-3xl border border-stone-800/50 backdrop-blur-xl shadow-2xl">
       <h2 className="text-2xl font-display font-bold text-amber-500 text-center mb-6">Daily Bible Verse</h2>
@@ -1370,13 +1379,42 @@ const DailyVerseGenerator: React.FC = () => {
 
       <div className="space-y-4">
         <div>
-          <label className="block text-xs font-bold uppercase tracking-widest text-stone-500 mb-2">Date</label>
+          <VersePlanPicker
+            label="Date"
+            selectedDate={date}
+            today={todayIso()}
+            disabled={isGenerating || isBulkGenerating}
+            onPick={handlePickPlanEntry}
+          />
           <input
             type="date"
             value={date}
             onChange={(e) => setDate(e.target.value)}
             className="w-full bg-stone-900 border border-stone-700 rounded-xl px-4 py-3 text-stone-200 focus:outline-none focus:border-amber-500 transition-colors"
           />
+          {plannedForDate && (
+            <div className="mt-2 flex items-center justify-between gap-3 rounded-xl border border-amber-700/40 bg-amber-900/10 px-3 py-2">
+              <div className="min-w-0 text-xs">
+                <div className="text-stone-400">
+                  Planned for {plannedForDate.day} · <span className="text-stone-300">{plannedForDate.theme}</span>
+                  {plannedForDate.occasion && <span className="text-fuchsia-300"> · {plannedForDate.occasion}</span>}
+                </div>
+                <div className="text-amber-300 font-medium truncate">
+                  {plannedForDate.reference} <span className="text-stone-500 font-normal">— {plannedForDate.hook}</span>
+                </div>
+              </div>
+              {(bulkMode || reference.trim() !== plannedForDate.reference) && (
+                <button
+                  type="button"
+                  onClick={() => handlePickPlanEntry(plannedForDate)}
+                  disabled={isGenerating || isBulkGenerating}
+                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-600 text-stone-950 hover:bg-amber-500 disabled:opacity-50"
+                >
+                  Use
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {bulkMode ? (
