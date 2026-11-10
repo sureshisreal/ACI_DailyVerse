@@ -9,6 +9,8 @@ cd "$(dirname "$0")/.."
 MODEL="${OLLAMA_MODEL:-gemma3:4b}"
 
 if ! command -v ollama >/dev/null; then
+  # The installer unpacks a .tar.zst archive.
+  command -v zstd >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
   curl -fsSL https://ollama.com/install.sh | sh
 fi
 
