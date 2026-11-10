@@ -36,6 +36,13 @@ if command -v ollama >/dev/null; then
 else
   export LLM_PROVIDER="${LLM_PROVIDER:-anthropic,gemini,groq}"
 fi
+# Narration voices: on this CPU-only machine the local engines are far too slow (Tamil Indic-Parler
+# takes 20-30+ min per meditation), so use the fast Edge neural voices (seconds per clip), falling back
+# to the local voices only if Edge fails. Set a TTS_ENGINE=local secret to use the local voices.
+export TTS_ENGINE="${TTS_ENGINE:-edge}"
+if [ "$TTS_ENGINE" = "edge" ] && [ ! -x .edge-tts-venv/bin/edge-tts ]; then
+  { python3 -m venv .edge-tts-venv && .edge-tts-venv/bin/pip install --quiet "edge-tts==7.3.1"; } >> "$LOG" 2>&1
+fi
 # Keep the Tamil TTS model loaded for 30 idle minutes (= the codespace idle timeout), not the default 10.
 export INDIC_PARLER_WORKER_IDLE_MIN="${INDIC_PARLER_WORKER_IDLE_MIN:-30}"
 # Double-detach (nohup + setsid + &) so Codespaces doesn't reap the server when this lifecycle command exits.
@@ -46,7 +53,9 @@ echo "DailyVerse starting on port 3000 - logs: tail -f $LOG"
 # Tamil (Indic-Parler) model load takes minutes on this CPU-only machine, and a first request that
 # includes it outlasts GitHub port forwarding. So pre-load it in the background once the server is up
 # (INDIC_PARLER_WORKER_IDLE_MIN above keeps it loaded as long as the codespace itself stays up.)
-if [ -x .indic-parler-venv/bin/python3 ]; then
+# Skipped with Edge voices: Tamil then only uses Indic-Parler as a fallback, and keeping its ~4.5 GB
+# model loaded would just take memory and CPU from everything else.
+if [ "$TTS_ENGINE" != "edge" ] && [ -x .indic-parler-venv/bin/python3 ]; then
   nohup setsid bash -c '
     for i in $(seq 1 60); do curl -s -o /dev/null localhost:3000/api/youtube/status && break; sleep 2; done
     echo "[$(date -u +%FT%TZ)] warming up Tamil TTS" >> "'"$LOG"'"

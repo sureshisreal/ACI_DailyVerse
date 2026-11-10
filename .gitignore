@@ -10,6 +10,7 @@ output/
 
 # Local open-source model installs (large binaries, not source)
 .piper-venv/
+.edge-tts-venv/
 .piper-voices/
 .mms-tts-venv/
 .indic-parler-venv/

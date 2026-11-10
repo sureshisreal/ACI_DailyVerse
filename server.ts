@@ -705,6 +705,67 @@ function speakableReference(reference: string, lang: 'en' | 'ta' | 'te'): string
   return `${book.trim()} ${chapter}, ${verses}`;
 }
 
+// --- Fast cloud voices (Microsoft Edge "Read aloud" neural voices via the edge-tts package) ---
+// The local engines are tuned for a machine with a GPU: on a CPU-only host (e.g. a 4-core Codespace)
+// Indic-Parler takes 20-30+ minutes for one Tamil meditation reflection and each Piper clip's Whisper
+// QA pass takes minutes. Edge voices come back at ~10x real time with no local model, so a whole run
+// fits in a few minutes. TTS_ENGINE=edge (set by .devcontainer/start.sh) turns this on; the default
+// 'local' keeps Piper + Indic-Parler "Jaya". Any Edge failure falls back to the local engine.
+// No Whisper QA here: these voices are not autoregressive samplers like Indic-Parler, so they don't
+// collapse into repeated words - that check exists for the local engines' failure modes.
+// Unofficial endpoint (no key or account) - if Microsoft changes it, calls fail and fall back.
+type TtsEngine = 'edge' | 'local';
+function getTtsEngine(): TtsEngine {
+  return (process.env.TTS_ENGINE || 'local').toLowerCase() === 'edge' ? 'edge' : 'local';
+}
+const EDGE_TTS_BIN = path.join(process.cwd(), '.edge-tts-venv', 'bin', 'edge-tts');
+// Female voices, matching the local ones (Piper en_GB cori, te_IN padmavathi, Indic-Parler Jaya).
+const EDGE_TTS_VOICES: Record<'ta' | 'te' | 'en', string> = {
+  ta: process.env.EDGE_TTS_VOICE_TA || 'ta-IN-PallaviNeural',
+  te: process.env.EDGE_TTS_VOICE_TE || 'te-IN-ShrutiNeural',
+  en: process.env.EDGE_TTS_VOICE_EN || 'en-GB-SoniaNeural',
+};
+// ~0.9x pace, the same unhurried devotional delivery PIPER_DEVOTIONAL_LENGTH_SCALE aims for.
+const EDGE_TTS_RATE = process.env.EDGE_TTS_RATE || '-10%';
+const EDGE_TTS_TIMEOUT_MS = 120_000;
+const EDGE_TTS_ATTEMPTS = 2;
+
+async function synthesizeWithEdgeOnce(text: string, lang: 'ta' | 'te' | 'en'): Promise<string | null> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edge-tts-'));
+  try {
+    const textPath = path.join(tempDir, 'in.txt');
+    const mp3Path = path.join(tempDir, 'out.mp3');
+    fs.writeFileSync(textPath, text, 'utf8'); // a file, not argv - meditation text is long
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(EDGE_TTS_BIN, ['--voice', EDGE_TTS_VOICES[lang], `--rate=${EDGE_TTS_RATE}`, '--file', textPath, '--write-media', mp3Path]);
+      let stderr = '';
+      const timer = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error(`edge-tts timed out after ${EDGE_TTS_TIMEOUT_MS / 1000}s`)); }, EDGE_TTS_TIMEOUT_MS);
+      proc.stderr.on('data', (d) => { stderr += d; });
+      proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+      proc.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`edge-tts exited ${code}: ${stderr.slice(-300)}`)); });
+    });
+    if (!fs.existsSync(mp3Path) || fs.statSync(mp3Path).size < 1000) throw new Error('edge-tts produced no audio');
+    return await applyDevotionalPostProcessing(mp3Path, tempDir);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function synthesizeWithEdge(text: string, lang: 'ta' | 'te' | 'en'): Promise<string | null> {
+  if (!fs.existsSync(EDGE_TTS_BIN)) {
+    console.warn(`[tts] TTS_ENGINE=edge but ${EDGE_TTS_BIN} is missing - run: python3 -m venv .edge-tts-venv && .edge-tts-venv/bin/pip install edge-tts`);
+    return null;
+  }
+  for (let attempt = 1; attempt <= EDGE_TTS_ATTEMPTS; attempt++) {
+    try {
+      return await synthesizeWithEdgeOnce(text, lang);
+    } catch (err: any) {
+      console.warn(`[tts] Edge ${lang} attempt ${attempt}/${EDGE_TTS_ATTEMPTS} failed: ${String(err?.message || err).slice(0, 200)}`);
+    }
+  }
+  return null;
+}
+
 // The Narration Video and the Meditation Video both open with the same verse reading, so without
 // this the same text was synthesized twice per language - for Tamil that's a second full
 // Indic-Parler run (model load + generation) queued behind runIndicParlerSerialized, the slowest
@@ -760,7 +821,13 @@ app.post('/api/verse-audio', async (req, res) => {
     : isTamilScript ? `${text}. ${speakableReference(reference, 'ta')}.`
     : isTeluguScript ? `${text}. ${speakableReference(reference, 'te')} నుండి.`
     : `${text}. Reading from ${speakableReference(reference, 'en')}.`;
+  const lang: 'ta' | 'te' | 'en' = isTamilScript ? 'ta' : isTeluguScript ? 'te' : 'en';
   const { audioBase64, provider } = await synthesizeNarrationCached(narration, async () => {
+    if (getTtsEngine() === 'edge') {
+      const edgeAudio = await synthesizeWithEdge(narration, lang);
+      if (edgeAudio) return { audioBase64: edgeAudio, provider: 'edge' };
+      console.warn(`[tts] Edge voice failed for ${lang}; falling back to the local voice (slow on CPU-only hosts).`);
+    }
     if (isTamilScript) return synthesizeTamil(narration);
     return { audioBase64: await synthesizeWithPiperQA(narration, isTeluguScript ? 'te' : 'en'), provider: 'piper' };
   });

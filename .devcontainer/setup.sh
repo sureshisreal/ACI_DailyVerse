@@ -17,6 +17,13 @@ fi
 PIPER_PKG=$(.piper-venv/bin/python3 -c 'import os, piper; print(os.path.dirname(piper.__file__))' 2>/dev/null)
 [ -n "$PIPER_PKG" ] && ln -sfn "${PIPER_PKG#"$PWD/.piper-venv/"}" .piper-venv/piper
 
+# Fast Edge neural voices (TTS_ENGINE=edge, see server.ts's synthesizeWithEdge) - the default on
+# Codespaces, where the local engines are too slow on CPU. Tiny pure-Python package, no model.
+if [ ! -x .edge-tts-venv/bin/edge-tts ]; then
+  python3 -m venv .edge-tts-venv
+  .edge-tts-venv/bin/pip install --quiet "edge-tts==7.3.1"
+fi
+
 mkdir -p .piper-voices
 BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main
 fetch() { [ -s ".piper-voices/$2" ] || curl -fsSL "$BASE/$1/$2" -o ".piper-voices/$2"; }

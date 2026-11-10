@@ -68,6 +68,13 @@ ANTHROPIC_API_KEY=sk-ant-...
 # OLLAMA_URL=http://localhost:11434
 # OLLAMA_TIMEOUT_MS=600000
 
+# Narration voices - see server.ts's synthesizeWithEdge:
+# TTS_ENGINE=local              # local (default): Piper (en/te) + Indic-Parler "Jaya" (ta) - needs a GPU (Mac MPS) to be quick
+#                               # edge: Microsoft Edge neural voices, seconds per clip, no key (default on Codespaces);
+#                               # setup: python3 -m venv .edge-tts-venv && .edge-tts-venv/bin/pip install edge-tts
+# EDGE_TTS_VOICE_TA=ta-IN-PallaviNeural  EDGE_TTS_VOICE_TE=te-IN-ShrutiNeural  EDGE_TTS_VOICE_EN=en-GB-SoniaNeural
+# EDGE_TTS_RATE=-10%
+
 # Instagram auto-post (see server/services/instagramSync.service.ts): Shorts uploaded to YouTube from
 # this app are posted to Instagram as Reels once they turn public on YouTube. Needs an Instagram
 # professional account linked to a Facebook Page and a Meta app token - never the account password.
