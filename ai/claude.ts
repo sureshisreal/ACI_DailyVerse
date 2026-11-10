@@ -39,32 +39,58 @@ function getClient(): Anthropic {
 }
 
 // --- Provider selection ---------------------------------------------------------------------------
-// LLM_PROVIDER picks where every call in this module goes:
-//   'anthropic' - Claude only.
-//   'ollama'    - a local open-weight model via Ollama (https://ollama.com) only - free, no API
-//                 account, nothing leaves the machine.
-//   'auto' (default) - Claude first; on a billing/auth failure (e.g. "credit balance is too low"),
-//                 a missing key, or Claude being unreachable, fall back to Ollama, and keep using
-//                 Ollama for OLLAMA_FALLBACK_MINUTES so every call doesn't first pay for a failing
-//                 Claude round trip.
-// OLLAMA_MODEL must support images for the vision calls (background review, poster design) and
-// should handle Tamil/Telugu - Gemma 3 does both. OLLAMA_URL defaults to the local Ollama server.
-type Provider = 'anthropic' | 'ollama' | 'auto';
+// Calls go down a chain of providers; one that is unusable (no key, no credits, rate-limited, down)
+// is skipped and the next is tried, and a provider that failed that way is skipped for
+// PROVIDER_COOLDOWN_MINUTES so every call doesn't first pay for a failing round trip.
+//   'anthropic' - Claude (ANTHROPIC_API_KEY).
+//   'gemini'    - Google Gemini via its OpenAI-compatible API (GEMINI_API_KEY, free tier at
+//                 https://aistudio.google.com/apikey). Strong Tamil/Telugu + image input. Seconds.
+//   'groq'      - Groq's OpenAI-compatible API (GROQ_API_KEY, free tier at https://console.groq.com/keys).
+//                 Very fast open-weight models. Seconds.
+//   'ollama'    - a local open-weight model via Ollama - free and private, but minutes per call on a
+//                 CPU-only host (e.g. Codespaces), so it is the last resort.
+// LLM_PROVIDER: 'auto' (default) = anthropic -> gemini -> groq -> ollama, skipping cloud providers
+// without a key; or one provider name to use only that one; or a comma list for a custom order
+// (e.g. "gemini,groq,ollama").
+type ProviderName = 'anthropic' | 'gemini' | 'groq' | 'ollama';
+const ALL_PROVIDERS: ProviderName[] = ['anthropic', 'gemini', 'groq', 'ollama'];
 const OLLAMA_DEFAULT_MODEL = 'gemma3:12b';
-const OLLAMA_FALLBACK_MINUTES = 10;
-let ollamaUntil = 0;
+// Google's rolling alias for its current Flash model, so the default doesn't break when a dated
+// model ID is retired. Override with GEMINI_MODEL (e.g. a Flash-Lite model for higher free quotas).
+const GEMINI_DEFAULT_MODEL = 'gemini-flash-latest';
+// Preferred Groq model (vision + multilingual); if it isn't live, one is picked from /models.
+const GROQ_PREFERRED_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+const PROVIDER_COOLDOWN_MINUTES = 10;
+const cooldownUntil: Partial<Record<ProviderName, number>> = {};
 
-function getProvider(): Provider {
-  const p = (process.env.LLM_PROVIDER || 'auto').toLowerCase();
-  return p === 'anthropic' || p === 'ollama' ? p : 'auto';
+function getProviderChain(): ProviderName[] {
+  const raw = (process.env.LLM_PROVIDER || 'auto').toLowerCase().trim();
+  if (raw !== 'auto') {
+    const named = raw.split(',').map((s) => s.trim()).filter((s): s is ProviderName => (ALL_PROVIDERS as string[]).includes(s));
+    if (named.length) return named;
+  }
+  // Auto: skip cloud providers with no key. Claude stays in even without a key when it is the only
+  // option, so its "ANTHROPIC_API_KEY is not set" error is what gets reported.
+  return ALL_PROVIDERS.filter((p) =>
+    p === 'anthropic' ? true
+      : p === 'gemini' ? !!process.env.GEMINI_API_KEY
+        : p === 'groq' ? !!process.env.GROQ_API_KEY
+          : true);
 }
 
-// Failures that won't resolve by retrying Claude right away - the cue for 'auto' to switch to Ollama.
+// Failure that won't resolve by retrying the same provider right away - move to the next one.
+// `cooldown: false` means skip it for this call only (e.g. a 400 that may be specific to this
+// request, such as an image sent to a text-only model).
+class ProviderUnavailable extends Error {
+  constructor(message: string, readonly cooldown = true) { super(message); }
+}
+
 function isClaudeUnavailable(err: unknown): boolean {
   if (err instanceof Anthropic.APIConnectionError) return true;
   if (err instanceof Anthropic.APIError) {
     const message = String(err.message || '').toLowerCase();
-    return err.status === 401 || err.status === 403 || (err.status === 400 && (message.includes('credit balance') || message.includes('billing')));
+    return err.status === 401 || err.status === 403 || err.status === 429 || err.status === 529
+      || (err.status === 400 && (message.includes('credit balance') || message.includes('billing')));
   }
   return err instanceof Error && err.message === 'ANTHROPIC_API_KEY is not set';
 }
@@ -78,22 +104,137 @@ interface ModelCall {
   json: boolean;
 }
 
+async function callProvider(provider: ProviderName, call: ModelCall): Promise<string> {
+  switch (provider) {
+    case 'anthropic': {
+      const content: string | Anthropic.MessageParam['content'] = call.image
+        ? [
+          { type: 'image', source: { type: 'base64', media_type: call.image.mediaType, data: call.image.base64 } },
+          { type: 'text', text: call.userText },
+        ]
+        : call.userText;
+      try {
+        return await callClaudeWithContent(call.systemPrompt, content, call.maxTokens, call.model);
+      } catch (err) {
+        if (isClaudeUnavailable(err)) throw new ProviderUnavailable(err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    }
+    case 'gemini':
+      return callOpenAICompatible(call, {
+        name: 'Gemini',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        apiKey: process.env.GEMINI_API_KEY,
+        model: process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL,
+      });
+    case 'groq':
+      return callOpenAICompatible(call, {
+        name: 'Groq',
+        baseUrl: 'https://api.groq.com/openai/v1',
+        apiKey: process.env.GROQ_API_KEY,
+        model: process.env.GROQ_MODEL || await pickGroqModel(),
+      });
+    case 'ollama':
+      return callOllama(call);
+  }
+}
+
 async function callModel(call: ModelCall): Promise<string> {
-  const provider = getProvider();
-  if (provider === 'ollama' || (provider === 'auto' && Date.now() < ollamaUntil)) return callOllama(call);
+  const chain = getProviderChain();
+  const now = Date.now();
+  // Providers not cooling down, in order; if every one is cooling down, try them all anyway rather
+  // than fail without a single attempt.
+  const ready = chain.filter((p) => (cooldownUntil[p] || 0) <= now);
+  const order = ready.length ? ready : chain;
+  let lastErr: unknown;
+  for (let i = 0; i < order.length; i++) {
+    const provider = order[i];
+    try {
+      return await callProvider(provider, call);
+    } catch (err) {
+      const isLast = i === order.length - 1;
+      if (!(err instanceof ProviderUnavailable) || isLast) throw err;
+      lastErr = err;
+      if (err.cooldown) cooldownUntil[provider] = Date.now() + PROVIDER_COOLDOWN_MINUTES * 60_000;
+      console.warn(`[llm] ${provider} unavailable (${err.message.slice(0, 160)}); trying ${order[i + 1]}${err.cooldown ? ` (skipping ${provider} for ${PROVIDER_COOLDOWN_MINUTES} min)` : ''}.`);
+    }
+  }
+  throw lastErr;
+}
+
+// OpenAI-style /chat/completions, used for Gemini and Groq. Both are fast hosted APIs, so plain fetch
+// with a short timeout is fine (unlike Ollama, below).
+async function callOpenAICompatible(
+  call: ModelCall,
+  cfg: { name: string; baseUrl: string; apiKey?: string; model: string }
+): Promise<string> {
+  if (!cfg.apiKey) throw new ProviderUnavailable(`${cfg.name} API key is not set`);
+  const timeoutMs = Number(process.env.CLOUD_LLM_TIMEOUT_MS) || 120_000;
+  // Groq's JSON mode requires the word "JSON" in the messages; this also keeps both models terse.
+  const system = call.json ? `${call.systemPrompt}\n\nRespond with a single valid JSON object only.` : call.systemPrompt;
+  const userContent = call.image
+    ? [
+      { type: 'text', text: call.userText },
+      { type: 'image_url', image_url: { url: `data:${call.image.mediaType};base64,${call.image.base64}` } },
+    ]
+    : call.userText;
+  let res: Response;
   try {
-    const content: string | Anthropic.MessageParam['content'] = call.image
-      ? [
-        { type: 'image', source: { type: 'base64', media_type: call.image.mediaType, data: call.image.base64 } },
-        { type: 'text', text: call.userText },
-      ]
-      : call.userText;
-    return await callClaudeWithContent(call.systemPrompt, content, call.maxTokens, call.model);
-  } catch (err) {
-    if (provider !== 'auto' || !isClaudeUnavailable(err)) throw err;
-    console.warn(`[llm] Claude unavailable (${err instanceof Error ? err.message.slice(0, 160) : err}); using local Ollama model for the next ${OLLAMA_FALLBACK_MINUTES} minutes.`);
-    ollamaUntil = Date.now() + OLLAMA_FALLBACK_MINUTES * 60_000;
-    return callOllama(call);
+    res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: userContent }],
+        // Indic scripts tokenize longer on these models than on Claude, and Gemini's thinking tokens
+        // count against this budget - so give generous headroom over the Claude-sized limit.
+        max_tokens: call.maxTokens * 2 + 4000,
+        temperature: 0.7,
+        ...(call.json ? { response_format: { type: 'json_object' } } : {}),
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err: any) {
+    throw new ProviderUnavailable(`${cfg.name} unreachable or timed out: ${err?.message || err}`);
+  }
+  const bodyText = await res.text();
+  if (!res.ok) {
+    const msg = `${cfg.name} (${cfg.model}) returned ${res.status}: ${bodyText.slice(0, 200)}`;
+    // 400 is often request-specific (e.g. image sent to a text-only model): skip for this call only.
+    // Gemini reports a bad key as 400 too - that one does deserve the cooldown.
+    if (res.status === 400) throw new ProviderUnavailable(msg, /api.key/i.test(bodyText));
+    if (res.status === 404 && cfg.name === 'Groq') groqModel = null; // model retired - re-pick next time
+    throw new ProviderUnavailable(msg);
+  }
+  let data: any;
+  try { data = JSON.parse(bodyText); } catch { throw new ProviderUnavailable(`${cfg.name} returned non-JSON: ${bodyText.slice(0, 200)}`, false); }
+  const choice = data?.choices?.[0];
+  const text = String(choice?.message?.content ?? '').trim();
+  if (choice?.finish_reason === 'length') throw new Error(`${cfg.name} (${cfg.model}) response was truncated (hit its output limit before finishing)`);
+  if (!text) throw new ProviderUnavailable(`${cfg.name} (${cfg.model}) returned no text (finish_reason: ${choice?.finish_reason})`, false);
+  return text;
+}
+
+// Groq retires models often, so rather than hard-code one, use the preferred model if it's live,
+// otherwise the first general chat model the account can see. Cached for the process.
+let groqModel: string | null = null;
+async function pickGroqModel(): Promise<string> {
+  if (groqModel) return groqModel;
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return GROQ_PREFERRED_MODEL;
+    const ids: string[] = ((await res.json())?.data || []).filter((m: any) => m?.active !== false).map((m: any) => String(m.id));
+    groqModel = ids.find((id) => id === GROQ_PREFERRED_MODEL)
+      || ids.find((id) => /llama-4/i.test(id))
+      || ids.find((id) => /llama|gpt-oss|qwen|kimi/i.test(id) && !/guard|whisper|tts|prompt/i.test(id))
+      || GROQ_PREFERRED_MODEL;
+    console.log(`[llm] Groq model: ${groqModel}`);
+    return groqModel;
+  } catch {
+    return GROQ_PREFERRED_MODEL;
   }
 }
 

@@ -55,8 +55,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 # CLAUDE_MODEL=claude-haiku-4-5   # optional override (default: claude-haiku-4-5, the cheapest)
 # CLAUDE_EFFORT=low              # optional: low | medium | high | xhigh | max (ignored by Haiku)
 
-# Free local alternative to Claude via Ollama (https://ollama.com) - see ai/claude.ts:
-# LLM_PROVIDER=auto              # auto (default: Claude, falling back to Ollama on billing/auth errors) | ollama | anthropic
+# Fallbacks when Claude is unavailable (no credits, bad key, rate limit) - see ai/claude.ts.
+# LLM_PROVIDER=auto              # auto (default): anthropic -> gemini -> groq -> ollama, skipping keyless cloud ones
+#                                # or one name (anthropic | gemini | groq | ollama), or a list: gemini,groq,ollama
+# Fast free cloud fallbacks (seconds per call):
+# GEMINI_API_KEY=...             # free key: https://aistudio.google.com/apikey
+# GEMINI_MODEL=gemini-flash-latest
+# GROQ_API_KEY=...               # free key: https://console.groq.com/keys
+# GROQ_MODEL=...                 # default: auto-picked from Groq's live model list
+# Free local fallback via Ollama (https://ollama.com) - private but slow on CPU (minutes per call):
 # OLLAMA_MODEL=gemma3:12b        # needs image support + Tamil/Telugu; install with: ollama pull gemma3:12b
 # OLLAMA_URL=http://localhost:11434
 # OLLAMA_TIMEOUT_MS=600000
@@ -139,6 +146,9 @@ voice-model setup if you want them.
   `POLLINATIONS_REFERRER` to identify this app for a looser limit.
 - **"Failed to reach the image generation service"** - check internet connectivity to
   `image.pollinations.ai`.
+- **Generation is slow / "Your credit balance is too low"** - Claude has no credits, so calls are
+  going to the local Ollama model, which takes minutes on a CPU. Set `GEMINI_API_KEY` and/or
+  `GROQ_API_KEY` (free keys; Codespaces secrets in a codespace) to fall back to a fast cloud model instead.
 - **Claude unavailable** (no `ANTHROPIC_API_KEY`, network error) - the app falls back to a generic
   (non-verse-specific) visual concept and the default gold/classic-serif poster styling, rather
   than blocking poster generation.

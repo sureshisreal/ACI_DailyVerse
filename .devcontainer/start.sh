@@ -18,10 +18,11 @@ if [ -r "$SECRETS_FILE" ]; then
     [ -z "${!BASH_REMATCH[1]}" ] && export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
   done < "$SECRETS_FILE"
 fi
-# LLM provider: if Ollama is installed (bash .devcontainer/setup-ollama.sh), start it and use "auto"
-# (Claude first, local model when Claude fails, e.g. no credits). Without it, use Claude only, so a
-# Claude failure is reported as-is instead of as "Could not reach Ollama at localhost:11434".
-# Override either via LLM_PROVIDER / OLLAMA_MODEL secrets.
+# LLM provider chain (see ai/claude.ts): Claude, then the fast free cloud fallbacks Gemini / Groq
+# (used when their GEMINI_API_KEY / GROQ_API_KEY secrets are set), then - only if installed via
+# bash .devcontainer/setup-ollama.sh - the slow local Ollama model. Without Ollama it is left out, so
+# a failure is reported as-is instead of as "Could not reach Ollama at localhost:11434".
+# Override via LLM_PROVIDER / OLLAMA_MODEL secrets.
 if command -v ollama >/dev/null; then
   if ! curl -s -o /dev/null localhost:11434; then
     OLLAMA_KEEP_ALIVE=30m nohup setsid ollama serve >> "$PWD/.cache/ollama.log" 2>&1 < /dev/null &
@@ -33,7 +34,7 @@ if command -v ollama >/dev/null; then
   # request can wait behind others well past the app's default 10-minute limit.
   export OLLAMA_TIMEOUT_MS="${OLLAMA_TIMEOUT_MS:-1800000}"
 else
-  export LLM_PROVIDER="${LLM_PROVIDER:-anthropic}"
+  export LLM_PROVIDER="${LLM_PROVIDER:-anthropic,gemini,groq}"
 fi
 # Keep the Tamil TTS model loaded for 30 idle minutes (= the codespace idle timeout), not the default 10.
 export INDIC_PARLER_WORKER_IDLE_MIN="${INDIC_PARLER_WORKER_IDLE_MIN:-30}"

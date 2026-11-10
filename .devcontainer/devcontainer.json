@@ -14,6 +14,8 @@
   },
   "secrets": {
     "ANTHROPIC_API_KEY": { "description": "Required - Claude API key for verse visual concepts" },
+    "GEMINI_API_KEY": { "description": "Recommended - free Google Gemini key (aistudio.google.com/apikey); fast fallback when Claude is unavailable" },
+    "GROQ_API_KEY": { "description": "Optional - free Groq key (console.groq.com/keys); fast fallback after Gemini" },
     "POLLINATIONS_API_KEY": { "description": "Optional - Pollinations image API key" },
     "HF_TOKEN": { "description": "Optional - Hugging Face token (needed for Indic-Parler TTS model)" },
     "YOUTUBE_CLIENT_ID": { "description": "Optional - YouTube upload" },
