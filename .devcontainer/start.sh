@@ -8,6 +8,6 @@ if pgrep -f "tsx server.ts" >/dev/null; then
   exit 0
 fi
 [ -d node_modules ] || { echo "node_modules missing - running setup first"; bash .devcontainer/setup.sh >> /tmp/dailyverse-setup.log 2>&1; }
-setsid nohup npm run dev >> /tmp/dailyverse.log 2>&1 < /dev/null &
-disown || true
+# setsid -f forks into a new session so Codespaces doesn't reap it when the lifecycle command exits.
+setsid -f bash -c 'npm run dev >> /tmp/dailyverse.log 2>&1 < /dev/null'
 echo "DailyVerse starting on port 3000 - logs: tail -f /tmp/dailyverse.log"
