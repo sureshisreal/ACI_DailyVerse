@@ -60,7 +60,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 #                                # or one name (anthropic | gemini | groq | ollama), or a list: gemini,groq,ollama
 # Fast free cloud fallbacks (seconds per call):
 # GEMINI_API_KEY=...             # free key: https://aistudio.google.com/apikey
-# GEMINI_MODEL=gemini-flash-latest
+# GEMINI_MODEL=...               # default: a fallback list of current Flash models (see ai/claude.ts)
 # GROQ_API_KEY=...               # free key: https://console.groq.com/keys
 # GROQ_MODEL=...                 # default: auto-picked from Groq's live model list
 # Free local fallback via Ollama (https://ollama.com) - private but slow on CPU (minutes per call):

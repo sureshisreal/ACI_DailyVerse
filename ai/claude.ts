@@ -55,9 +55,13 @@ function getClient(): Anthropic {
 type ProviderName = 'anthropic' | 'gemini' | 'groq' | 'ollama';
 const ALL_PROVIDERS: ProviderName[] = ['anthropic', 'gemini', 'groq', 'ollama'];
 const OLLAMA_DEFAULT_MODEL = 'gemma3:12b';
-// Google's rolling alias for its current Flash model, so the default doesn't break when a dated
-// model ID is retired. Override with GEMINI_MODEL (e.g. a Flash-Lite model for higher free quotas).
-const GEMINI_DEFAULT_MODEL = 'gemini-flash-latest';
+// Gemini models tried in order. Individual free-tier models are often briefly overloaded (503) or
+// hang, and dated IDs get retired (404), so one that fails that way is skipped for a few minutes and
+// the next is tried; the rolling "-latest" alias is the final catch-all. Override with GEMINI_MODEL
+// (one ID or a comma list).
+const GEMINI_DEFAULT_MODELS = 'gemini-3.5-flash,gemini-3.1-flash-lite,gemini-flash-latest,gemini-flash-lite-latest';
+const MODEL_COOLDOWN_MINUTES = 3;
+const modelCooldownUntil: Record<string, number> = {};
 // Preferred Groq model (vision + multilingual); if it isn't live, one is picked from /models.
 const GROQ_PREFERRED_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 const PROVIDER_COOLDOWN_MINUTES = 10;
@@ -120,13 +124,28 @@ async function callProvider(provider: ProviderName, call: ModelCall): Promise<st
         throw err;
       }
     }
-    case 'gemini':
-      return callOpenAICompatible(call, {
-        name: 'Gemini',
-        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-        apiKey: process.env.GEMINI_API_KEY,
-        model: process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL,
-      });
+    case 'gemini': {
+      const models = (process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODELS).split(',').map((m) => m.trim()).filter(Boolean);
+      const ready = models.filter((m) => (modelCooldownUntil[`gemini:${m}`] || 0) <= Date.now());
+      let lastErr: unknown;
+      for (const model of ready.length ? ready : models) {
+        try {
+          return await callOpenAICompatible(call, {
+            name: 'Gemini',
+            baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+            apiKey: process.env.GEMINI_API_KEY,
+            model,
+          });
+        } catch (err) {
+          // A bad/missing key fails every model the same way - stop and let the chain move on.
+          if (!(err instanceof ProviderUnavailable) || /api.key/i.test(err.message)) throw err;
+          lastErr = err;
+          if (err.cooldown) modelCooldownUntil[`gemini:${model}`] = Date.now() + MODEL_COOLDOWN_MINUTES * 60_000;
+          console.warn(`[llm] Gemini ${model} failed (${err.message.slice(0, 120)}); trying next Gemini model.`);
+        }
+      }
+      throw lastErr;
+    }
     case 'groq':
       return callOpenAICompatible(call, {
         name: 'Groq',
@@ -169,7 +188,7 @@ async function callOpenAICompatible(
   cfg: { name: string; baseUrl: string; apiKey?: string; model: string }
 ): Promise<string> {
   if (!cfg.apiKey) throw new ProviderUnavailable(`${cfg.name} API key is not set`);
-  const timeoutMs = Number(process.env.CLOUD_LLM_TIMEOUT_MS) || 120_000;
+  const timeoutMs = Number(process.env.CLOUD_LLM_TIMEOUT_MS) || 60_000; // a hung free-tier model sends no bytes at all - move on
   // Groq's JSON mode requires the word "JSON" in the messages; this also keeps both models terse.
   const system = call.json ? `${call.systemPrompt}\n\nRespond with a single valid JSON object only.` : call.systemPrompt;
   const userContent = call.image
