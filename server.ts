@@ -122,6 +122,85 @@ function proportionalWordTimings(words: string[], start: number, end: number): W
   });
 }
 
+// Word timings estimated from the audio itself, for engines that don't report them (local Piper /
+// Indic-Parler voices) - drives the video's reading highlighter. Whisper alignment is not usable
+// here for Tamil/Telugu: it routinely returned every word crammed into the last few milliseconds of
+// the clip. Instead: find where the voice is actually speaking (frame energy), then spread each
+// speech stretch over its words by length. These voices pause at commas and full stops, so when the
+// number of pauses matches the text's clauses, each clause is fitted to its own stretch of speech.
+function estimateWordTimings(audioBase64: string, text: string): WordTiming[] {
+  const words = splitWords(text);
+  if (!words.length) return [];
+  const { samples, sampleRate } = decodePcm16Base64(audioBase64);
+  const frameLen = Math.max(1, Math.round(sampleRate * 0.02));
+  const frameSec = frameLen / sampleRate;
+  const rms: number[] = [];
+  for (let i = 0; i + frameLen <= samples.length; i += frameLen) {
+    let sum = 0;
+    for (let j = i; j < i + frameLen; j++) sum += samples[j] * samples[j];
+    rms.push(Math.sqrt(sum / frameLen));
+  }
+  const totalSec = samples.length / sampleRate;
+  if (rms.length < 5) return proportionalWordTimings(words, 0, totalSec);
+
+  // Speech frames: above a threshold between the noise floor and typical speech level.
+  const sorted = [...rms].sort((a, b) => a - b);
+  const noise = sorted[Math.floor(sorted.length * 0.1)];
+  const loud = sorted[Math.floor(sorted.length * 0.95)];
+  const threshold = noise + (loud - noise) * 0.1;
+  // Speech stretches, ignoring dips shorter than MIN_GAP (between syllables) and blips shorter than MIN_SPEECH.
+  const MIN_GAP = 0.22, MIN_SPEECH = 0.08;
+  let segments: { start: number; end: number }[] = [];
+  let segStart = -1;
+  rms.forEach((v, i) => {
+    if (v > threshold && segStart < 0) segStart = i;
+    if (v <= threshold && segStart >= 0) { segments.push({ start: segStart * frameSec, end: i * frameSec }); segStart = -1; }
+  });
+  if (segStart >= 0) segments.push({ start: segStart * frameSec, end: rms.length * frameSec });
+  const merged: { start: number; end: number }[] = [];
+  for (const seg of segments) {
+    const last = merged[merged.length - 1];
+    if (last && seg.start - last.end < MIN_GAP) last.end = seg.end;
+    else merged.push({ ...seg });
+  }
+  segments = merged.filter((seg) => seg.end - seg.start >= MIN_SPEECH);
+  if (!segments.length) return proportionalWordTimings(words, 0, totalSec);
+
+  // Length weight per word (letters incl. vowel signs track syllables reasonably in all three scripts),
+  // plus a little for the transition between words.
+  const weightOf = (w: string) => Array.from(w.replace(/[\p{P}\p{S}]/gu, '')).length + 0.6;
+
+  // Clauses: word runs ending in pause punctuation.
+  const clauses: string[][] = [[]];
+  words.forEach((w, i) => {
+    clauses[clauses.length - 1].push(w);
+    if (/[,;:.!?।]["'”’)]*$/.test(w) && i < words.length - 1) clauses.push([]);
+  });
+
+  const spread = (ws: string[], start: number, end: number) => {
+    const total = ws.reduce((a, w) => a + weightOf(w), 0) || 1;
+    let t = start;
+    return ws.map((w) => { const d = (weightOf(w) / total) * (end - start); const r = { text: w, start: t, end: t + d }; t += d; return r; });
+  };
+
+  if (clauses.length === segments.length) {
+    return clauses.flatMap((c, i) => spread(c, segments[i].start, segments[i].end));
+  }
+
+  // Otherwise spread all words over the speech-only timeline (pauses skipped), then map back to real time.
+  const speechTotal = segments.reduce((a, s) => a + (s.end - s.start), 0);
+  const toRealTime = (speechT: number) => {
+    let acc = 0;
+    for (const s of segments) {
+      const len = s.end - s.start;
+      if (speechT <= acc + len) return s.start + (speechT - acc);
+      acc += len;
+    }
+    return segments[segments.length - 1].end;
+  };
+  return spread(words, 0, speechTotal).map((w) => ({ text: w.text, start: toRealTime(w.start), end: toRealTime(w.end) }));
+}
+
 // Uses Whisper only to find real word/speech-segment boundaries in the audio;
 // the on-screen text always stays our verified reference words (never the ASR's own transcription),
 // since Whisper's Tamil/Telugu transcription accuracy isn't reliable enough to display directly.
@@ -880,8 +959,15 @@ app.post('/api/verse-audio', async (req, res) => {
       if (edgeAudio) return { audioBase64: edgeAudio.audioBase64, provider: 'edge', words: edgeAudio.words };
       console.warn(`[tts] Edge voice failed for ${lang}; falling back to the local voice (slow on CPU-only hosts).`);
     }
-    if (isTamilScript) return synthesizeTamil(narration);
-    return { audioBase64: await synthesizeWithPiperQA(narration, isTeluguScript ? 'te' : 'en'), provider: 'piper' };
+    // Local voices don't report word timings - estimate them from the audio (see estimateWordTimings).
+    const local = isTamilScript
+      ? await synthesizeTamil(narration)
+      : { audioBase64: await synthesizeWithPiperQA(narration, isTeluguScript ? 'te' : 'en'), provider: 'piper' };
+    let estimated: WordTiming[] | undefined;
+    if (local.audioBase64) {
+      try { estimated = estimateWordTimings(local.audioBase64, narration); } catch (err: any) { console.warn('Word timing estimate failed:', err?.message || err); }
+    }
+    return { ...local, words: estimated };
   });
   if (audioBase64) {
     // words: per-word timings when the engine provides them (Edge) - for the reading highlighter.
