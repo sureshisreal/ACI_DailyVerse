@@ -14,7 +14,7 @@ import type {
 } from '../types';
 
 // Bump whenever the prompt or validation below changes materially.
-export const POSTER_DESIGN_VERSION = 2; // 2: more typefaces, curated accent palette, light text always
+export const POSTER_DESIGN_VERSION = 3; // 3: one of two professional type styles per design (no font mixing)
 
 const VARIANT_COUNT = 3;
 const CACHE_DIR = path.join(process.cwd(), 'cache', 'poster-design');
@@ -22,12 +22,15 @@ const CACHE_DIR = path.join(process.cwd(), 'cache', 'poster-design');
 // Must match the poster canvas in components/posterRenderer.ts (EDITORIAL_W x EDITORIAL_H).
 const POSTER_ASPECT = 1080 / 1350;
 
-const ENGLISH_FONTS: PosterEnglishFont[] = ['playfair', 'cormorant', 'lora', 'cinzel', 'montserrat', 'lato', 'eb-garamond', 'libre-baskerville', 'dm-serif-display', 'crimson-pro'];
-const TAMIL_FONTS: PosterTamilFont[] = ['noto-serif-tamil', 'noto-sans-tamil', 'arima-madurai', 'tiro-tamil', 'mukta-malar', 'hind-madurai', 'catamaran'];
-const TELUGU_FONTS: PosterTeluguFont[] = ['noto-serif-telugu', 'noto-sans-telugu', 'tiro-telugu', 'hind-guntur', 'anek-telugu', 'ramabhadra'];
 const ANCHORS: PosterAnchor[] = ['top', 'upper', 'middle', 'lower', 'bottom'];
-// Italic is only loaded for these English families (see index.html).
-const ITALIC_ENGLISH_FONTS = new Set<PosterEnglishFont>(['playfair', 'cormorant', 'lora', 'eb-garamond', 'crimson-pro']);
+
+// The two professional type styles a design chooses between. Fonts always come as a set from one
+// style - picking faces individually let designs mix (e.g. a calligraphic Tamil serif with a geometric
+// English sans), which looked unconsidered.
+const TYPE_STYLES = {
+  classic: { tamilFont: 'noto-serif-tamil', teluguFont: 'noto-serif-telugu', englishFont: 'playfair' },
+  elegant: { tamilFont: 'tiro-tamil', teluguFont: 'tiro-telugu', englishFont: 'eb-garamond' },
+} as const satisfies Record<string, { tamilFont: PosterTamilFont; teluguFont: PosterTeluguFont; englishFont: PosterEnglishFont }>;
 
 const SYSTEM_PROMPT = `You are an art director for a Christian devotional channel, designing bilingual Bible-verse posters (4:5, 1080x1350). Each poster shows the verse in an Indian language (Tamil or Telugu - one design is used for both) and in English, over the background photo you are shown, which is already cropped exactly as the poster frame.
 
@@ -41,20 +44,18 @@ Layout vocabulary:
 - sizeScale: 0.8 - 1.2 relative to default size. Smaller when space is tight, larger for a short verse with lots of open space.
 
 Typography vocabulary (only these exist):
-- englishFont: playfair (elegant high-contrast serif), cormorant (delicate classical serif), eb-garamond (timeless book serif, scholarly and reverent), libre-baskerville (stately traditional serif), crimson-pro (refined literary serif), dm-serif-display (bold contemporary display serif), lora (warm readable serif), cinzel (engraved Roman capitals, formal), montserrat (clean modern sans), lato (soft modern sans).
-- englishItalic: true/false (only honoured for playfair, cormorant, lora).
-- tamilFont (the face for the emphasised words; body text gets a matching sans automatically): noto-serif-tamil (classic serif), tiro-tamil (elegant calligraphic serif, graceful and devotional), arima-madurai (warm, rounded), mukta-malar (refined modern sans), hind-madurai (crisp contemporary sans), catamaran (strong modern display sans), noto-sans-tamil (neutral sans).
-- teluguFont (same idea): noto-serif-telugu (classic serif), tiro-telugu (elegant calligraphic serif), ramabhadra (bold traditional display), hind-guntur (crisp contemporary sans), anek-telugu (strong modern sans), noto-sans-telugu (neutral sans).
+- typeStyle (the complete font set - pick the ONE that best fits this verse and photo):
+  classic - Noto Serif Tamil / Noto Serif Telugu emphasis with clean sans body, Playfair Display for English. Formal, majestic, declarative verses (praise, commands, God's power and promises); strong, structured photos.
+  elegant - Tiro Tamil / Tiro Telugu calligraphic serif emphasis with refined sans body, EB Garamond for English. Tender, comforting, intimate verses (love, rest, healing, God's care); soft, gentle photos.
 - primaryWeight: regular | bold.
 - heroMode: firstWord (opening word(s) enlarged in the accent colour) | none (uniform, quieter).
-- heroScript: always false (script faces are not used).
 - divider: flourish (ornamental) | rule (simple line) | none.
 - accentColor: pick from this curated palette (or a very close variant) to harmonise with the photo's own colours and the verse mood - champagne #D9B76A, antique gold #C9A24A, amber #E2A256, copper #C98455, rose gold #D69A86, dusty rose #D4A0A6, lavender #B7A3D3, slate blue #93AECB, teal mist #86B8B3, sage #A8B98E. Text is always warm white on a softly darkened photo; the accent is used only for the emphasised words, references and divider.
 
-Match the typography to the verse's mood and the photo's character (e.g. formal/majestic -> cinzel, playfair or libre-baskerville with noto-serif / ramabhadra; tender/comforting -> cormorant or eb-garamond with tiro-tamil / tiro-telugu; contemporary/everyday scene -> dm-serif-display, montserrat or lato with mukta-malar / hind-madurai / hind-guntur / anek-telugu). Keep it reverent and legible - a devotional poster, not a fashion ad.
+Use the same typeStyle in every variant - the best match for this verse and photo - and vary only layout, divider and accent between variants. Keep it reverent and legible - a devotional poster, not a fashion ad.
 
 Reply with JSON only:
-{"designs":[{"name":"2-3 word label","arrangement":"stacked|split","primary":{"anchor":"...","align":"...","sizeScale":1.0},"english":{"anchor":"...","align":"...","sizeScale":1.0},"tamilFont":"...","teluguFont":"...","englishFont":"...","englishItalic":true,"primaryWeight":"bold","heroMode":"firstWord","heroScript":false,"divider":"flourish","accentColor":"#RRGGBB","rationale":"one sentence: where the clear space is and why this design fits"}]}`;
+{"designs":[{"name":"2-3 word label","arrangement":"stacked|split","primary":{"anchor":"...","align":"...","sizeScale":1.0},"english":{"anchor":"...","align":"...","sizeScale":1.0},"typeStyle":"classic|elegant","primaryWeight":"bold","heroMode":"firstWord","divider":"flourish","accentColor":"#RRGGBB","rationale":"one sentence: where the clear space is and why this design fits"}]}`;
 
 export interface PosterDesignRequest {
   backgroundImageBase64: string;
@@ -124,19 +125,21 @@ function validateBlock(raw: any): PosterBlockDesign {
 }
 
 function validateDesign(raw: any, fallbackAccent: string): PosterDesign {
-  const englishFont = pick(raw?.englishFont, ENGLISH_FONTS, 'cormorant');
+  const typeStyle = pick(raw?.typeStyle, ['classic', 'elegant'] as const, 'classic');
+  const fonts = TYPE_STYLES[typeStyle];
   return {
     name: typeof raw?.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 32) : 'Design',
     arrangement: pick(raw?.arrangement, ['stacked', 'split'] as const, 'stacked'),
     primary: validateBlock(raw?.primary),
     english: validateBlock(raw?.english),
-    tamilFont: pick(raw?.tamilFont, TAMIL_FONTS, 'noto-serif-tamil'),
-    teluguFont: pick(raw?.teluguFont, TELUGU_FONTS, 'noto-serif-telugu'),
-    englishFont,
-    englishItalic: ITALIC_ENGLISH_FONTS.has(englishFont) ? raw?.englishItalic !== false : false,
+    typeStyle,
+    tamilFont: fonts.tamilFont,
+    teluguFont: fonts.teluguFont,
+    englishFont: fonts.englishFont,
+    englishItalic: false,
     primaryWeight: pick(raw?.primaryWeight, ['regular', 'bold'] as const, 'bold'),
     heroMode: pick(raw?.heroMode, ['firstWord', 'none'] as const, 'firstWord'),
-    heroScript: raw?.heroScript === true,
+    heroScript: false,
     divider: pick(raw?.divider, ['flourish', 'rule', 'none'] as const, 'flourish'),
     accentColor: typeof raw?.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.accentColor) ? raw.accentColor : fallbackAccent,
     rationale: typeof raw?.rationale === 'string' ? raw.rationale.slice(0, 300) : '',

@@ -61,18 +61,20 @@ const FONT_STYLE_PRESETS: Record<FontStyleKey, FontStylePreset> = {
     englishWeight: 400,
     primaryFontFamily: { ta: '"Noto Serif Tamil", serif', te: '"Noto Serif Telugu", serif' },
   },
+  // Only two professional styles are used: Classic (Noto Serif + Playfair) and Elegant (Tiro + EB
+  // Garamond). The other two theme keys fold into them - formal themes to Classic, warm ones to Elegant.
   'engraved-display': {
-    tamilFace: 'catamaran',
-    teluguFace: 'anek-telugu',
-    englishFontFamily: '"Libre Baskerville"',
+    tamilFace: 'noto-serif-tamil',
+    teluguFace: 'noto-serif-telugu',
+    englishFontFamily: '"Playfair Display"',
     englishItalic: false,
     englishWeight: 700,
     primaryFontFamily: { ta: '"Noto Serif Tamil", serif', te: '"Noto Serif Telugu", serif' },
   },
   'decorative-warm': {
-    tamilFace: 'arima-madurai',
-    teluguFace: 'ramabhadra',
-    englishFontFamily: 'Lora',
+    tamilFace: 'tiro-tamil',
+    teluguFace: 'tiro-telugu',
+    englishFontFamily: '"EB Garamond"',
     englishItalic: true,
     englishWeight: 400,
     primaryFontFamily: { ta: '"Arima Madurai", serif', te: '"Noto Serif Telugu", serif' },

@@ -67,6 +67,8 @@ export interface PosterDesign {
   arrangement: 'stacked' | 'split';
   primary: PosterBlockDesign;
   english: PosterBlockDesign;
+  // The professional type style this design uses - the fonts below are always set from it, never mixed.
+  typeStyle?: 'classic' | 'elegant';
   tamilFont: PosterTamilFont;
   teluguFont: PosterTeluguFont;
   englishFont: PosterEnglishFont;
