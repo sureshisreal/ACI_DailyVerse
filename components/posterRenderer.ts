@@ -680,6 +680,58 @@ function accentForTheme(accentHex: string, isLight: boolean): string {
   return isLight ? hslToHex(h, Math.max(0.62, sat), 0.29) : hslToHex(h, sat, 0.68);
 }
 
+// --- Accent colour matched to the photo ---
+// Brand-safe accents a verse's colour is matched to - warm metallics first (the ministry's gold look),
+// then soft naturals - so the accent always belongs to the image without ever going garish.
+const BRAND_ACCENTS = ['#D4A845', '#E0953A', '#C8743F', '#D98C8C', '#8FB573', '#6FA8D6', '#A38FD6'];
+
+// Picks the accent from the background's own palette: the strongest colour in the photo (by area,
+// saturation and mid-tone brightness, with warm light weighted up so a golden glow beats a big blue
+// sky), snapped to the nearest brand-safe accent. A mostly white/grey/black photo has no real colour
+// to match, so the verse's theme accent (fallbackHex) is kept. Lightness is tuned later per text
+// band for contrast (accentForTheme).
+export function accentFromImage(img: HTMLImageElement | null, fallbackHex: string): string {
+  if (!img) return fallbackHex;
+  try {
+    const N = 48;
+    const canvas = document.createElement('canvas');
+    canvas.width = N;
+    canvas.height = N;
+    const c = canvas.getContext('2d', { willReadFrequently: true })!;
+    c.drawImage(img, 0, 0, N, N);
+    const data = c.getImageData(0, 0, N, N).data;
+    const BINS = 36;
+    const hist = new Array<number>(BINS).fill(0);
+    let total = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const l = (max + min) / 2, d = max - min;
+      if (d < 0.04) continue;
+      const sat = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (sat < 0.22 || l < 0.12 || l > 0.92) continue;
+      let h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      h /= 6;
+      const warm = h < 0.17 || h > 0.95 ? 1.35 : 1; // reds, oranges, golds
+      const weight = sat * (1 - Math.abs(l - 0.5) * 1.2) * warm;
+      hist[Math.floor(h * BINS) % BINS] += weight;
+      total += weight;
+    }
+    // Too little real colour in the photo (pale, grey, monochrome) - keep the theme's accent.
+    if (total < N * N * 0.05) return fallbackHex;
+    let peak = 0, peakVal = -1;
+    for (let k = 0; k < BINS; k++) {
+      const v = hist[(k + BINS - 1) % BINS] + hist[k] * 2 + hist[(k + 1) % BINS];
+      if (v > peakVal) { peakVal = v; peak = k; }
+    }
+    const peakHue = (peak + 0.5) / BINS;
+    const hueDist = (a: number, b: number) => { const x = Math.abs(a - b); return Math.min(x, 1 - x); };
+    return BRAND_ACCENTS.reduce((best, hex) => (hueDist(hexToHsl(hex).h, peakHue) < hueDist(hexToHsl(best).h, peakHue) ? hex : best));
+  } catch {
+    return fallbackHex;
+  }
+}
+
 // Resolved once per poster from the actual brightness of the band the text landed in (dark-on-light
 // for a bright background, light-on-dark for a dark one) and from the verse's Claude-chosen accent
 // hue. The hero clause always renders in the accent color; body text switches with the theme.
@@ -1047,11 +1099,20 @@ async function renderVersePosterInternal(
 
   const fontStyle = verse.fontStyle && FONT_STYLE_PRESETS[verse.fontStyle] ? verse.fontStyle : DEFAULT_FONT_STYLE;
   const preset = FONT_STYLE_PRESETS[fontStyle];
-  const accentColorHex = verse.accentColor || PALETTE.GOLD;
-  const primaryFontFamily = primaryFontFamilyFor(verse.primaryLang, fontStyle);
+  // The verse's poster design (verse.design - the AI's typography/colour for this background, also
+  // used by the bilingual posters) wins over the theme preset, so a verse's posters, videos and
+  // meditation card all share one look.
+  const design = verse.design;
+  const designEnglish = design ? DESIGN_ENGLISH_FONTS[design.englishFont] : null;
+  const accentColorHex = design?.accentColor || verse.accentColor || PALETTE.GOLD;
+  const primaryFontFamily = design && verse.primaryLang !== 'en'
+    ? (verse.primaryLang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont])
+    : primaryFontFamilyFor(verse.primaryLang, fontStyle);
   void 'Montserrat';
-  const englishFontFamily = preset.englishFontFamily;
-  const englishStyle = preset.englishItalic ? 'italic ' : '';
+  const englishFontFamily = designEnglish ? designEnglish.family : preset.englishFontFamily;
+  const englishItalicOn = design ? design.englishItalic : preset.englishItalic;
+  const englishStyle = englishItalicOn ? 'italic ' : '';
+  const englishWeight = designEnglish ? (englishItalicOn ? designEnglish.bodyItalic : designEnglish.body) : preset.englishWeight;
   const hasSecondaryEnglish = typeof verse.englishText === 'string' && typeof verse.englishRef === 'string';
   // English-as-primary reuses its own family/italic/weight throughout (no synthetic weight jump
   // for the hero clause - unlike Tamil/Telugu's forced 700/900, some English presets only have a
@@ -1059,8 +1120,9 @@ async function renderVersePosterInternal(
   // emphasis there comes from size + accent color alone rather than a heavier weight.
   const primaryIsEnglish = verse.primaryLang === 'en';
   const primaryStylePrefix = primaryIsEnglish ? englishStyle : '';
-  const primaryBaseWeight = primaryIsEnglish ? preset.englishWeight : 700;
-  const primaryHeroWeight = primaryIsEnglish ? preset.englishWeight : 900;
+  const regularPrimary = design?.primaryWeight === 'regular';
+  const primaryBaseWeight = primaryIsEnglish ? englishWeight : regularPrimary ? 400 : 700;
+  const primaryHeroWeight = primaryIsEnglish ? (designEnglish ? designEnglish.hero : englishWeight) : regularPrimary ? 700 : 900;
 
   let scale = 1.0;
   const MIN_TEXT_SCALE = 0.6;
@@ -1092,13 +1154,13 @@ async function renderVersePosterInternal(
       clauseGap: 12 * scale,
       maxWidth: MAX_W - 40,
       quoted: false,
-      enableHero: true,
+      enableHero: design ? design.heroMode !== 'none' : true,
     });
 
     // The citation in the verse's own typeface and script, accent-coloured - not "Great Vibes", which
     // has no Tamil/Telugu glyphs (the book name fell back to another font beside ornate Latin digits).
     primaryRefFont = primaryIsEnglish
-      ? `${englishStyle}${preset.englishWeight} ${primaryRefSize * 0.8}px ${englishFontFamily}`
+      ? `${englishStyle}${englishWeight} ${primaryRefSize * 0.8}px ${englishFontFamily}`
       : `700 ${primaryRefSize * 0.78}px ${primaryFontFamily}`;
     primaryRefLH = primaryRefSize * 1.4;
     primaryRefLines = wrapText(ctx, verse.primaryRef, primaryRefFont, MAX_W - 60);
@@ -1106,8 +1168,8 @@ async function renderVersePosterInternal(
     let overflowsWidth = primaryLayout.overflowsWidth;
 
     if (hasSecondaryEnglish) {
-      const englishBaseWeight = primaryIsEnglish ? preset.englishWeight : 500;
-      const englishHeroWeight = primaryIsEnglish ? preset.englishWeight : 800;
+      const englishBaseWeight = primaryIsEnglish ? englishWeight : 500;
+      const englishHeroWeight = primaryIsEnglish ? englishWeight : 800;
       englishLayout = buildClauseBlock(ctx, verse.englishText!, {
         baseFont: `${englishStyle}${englishBaseWeight} ${englishBaseSize}px ${englishFontFamily}`,
         heroFont: `${englishStyle}${englishHeroWeight} ${englishBaseSize * englishHeroScale}px ${englishFontFamily}`,
@@ -1116,10 +1178,10 @@ async function renderVersePosterInternal(
         clauseGap: 10 * scale,
         maxWidth: MAX_W - 40,
         quoted: false,
-        enableHero: true,
+        enableHero: design ? design.heroMode !== 'none' : true,
       });
 
-      englishRefFont = `${englishStyle}${preset.englishWeight} ${englishRefSize * 0.8}px ${englishFontFamily}`;
+      englishRefFont = `${englishStyle}${englishWeight} ${englishRefSize * 0.8}px ${englishFontFamily}`;
       englishRefLH = englishRefSize * 1.5;
       englishRefLines = wrapText(ctx, verse.englishRef!, englishRefFont, MAX_W - 60);
 
@@ -2821,6 +2883,8 @@ export interface MeditationFrameInput {
   reference: string; // in this language, e.g. "சங்கீதம் 23:1"
   fontStyle?: FontStyleKey;
   accentColor?: string;
+  // The verse's poster design - its fonts and accent win over the theme preset (one look per verse).
+  design?: PosterDesign;
 }
 
 function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -2917,17 +2981,23 @@ export async function renderMeditationFrame(
   // Title block, left side, centered in the space left of the card.
   const fontStyle = input.fontStyle && FONT_STYLE_PRESETS[input.fontStyle] ? input.fontStyle : DEFAULT_FONT_STYLE;
   const preset = FONT_STYLE_PRESETS[fontStyle];
-  const accent = input.accentColor || PALETTE.GOLD;
+  const design = input.design;
+  const designEnglish = design ? DESIGN_ENGLISH_FONTS[design.englishFont] : null;
+  const accent = design?.accentColor || input.accentColor || PALETTE.GOLD;
+  const englishFamily = designEnglish ? designEnglish.family : preset.englishFontFamily;
+  const englishItalic = design ? design.englishItalic : preset.englishItalic;
   const colLeft = width * 0.07;
   const colRight = cardX - width * 0.05;
   const colW = colRight - colLeft;
   const colCX = (colLeft + colRight) / 2;
-  const titleFamily = input.lang === 'en' ? preset.englishFontFamily : preset.primaryFontFamily[input.lang];
+  const titleFamily = input.lang === 'en' ? englishFamily
+    : design ? (input.lang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont])
+    : preset.primaryFontFamily[input.lang];
   const titleFont = (px: number) => input.lang === 'en'
-    ? `${preset.englishItalic ? 'italic ' : ''}700 ${px}px ${titleFamily}`
+    ? `${englishItalic ? 'italic ' : ''}700 ${px}px ${titleFamily}`
     : `700 ${px}px ${titleFamily}`;
   const refFont = (px: number) => input.lang === 'en'
-    ? `${preset.englishItalic ? 'italic ' : ''}${preset.englishWeight} ${px}px ${titleFamily}`
+    ? `${englishItalic ? 'italic ' : ''}${designEnglish ? designEnglish.body : preset.englishWeight} ${px}px ${titleFamily}`
     : `400 ${px}px ${titleFamily}`;
   const subFont = (px: number) => input.lang === 'en' ? `700 ${px}px Montserrat` : `700 ${px}px ${titleFamily}`;
 

@@ -26,7 +26,7 @@ import {
   type MeditationText,
   type VersePortion,
 } from '../services/verseApi';
-import { loadImage, base64ToImageDataUrl, renderVersePosterHighlightSet, renderCornerPoster, renderThumbnail, renderMeditationFrame, meditationCardRect, upscaleToCanonical, blobToBase64, type PosterWordBox } from './posterRenderer';
+import { loadImage, base64ToImageDataUrl, renderVersePosterHighlightSet, renderCornerPoster, renderThumbnail, renderMeditationFrame, meditationCardRect, accentFromImage, upscaleToCanonical, blobToBase64, type PosterWordBox } from './posterRenderer';
 import { buildHighlightWords, transformBoxes, type SpokenWord } from './wordHighlight';
 import { pcm16Base64ToWavBase64, combinePcm16PartsToWavBase64, pcm16Base64DurationSeconds, dataUrlToBlobUrl, blobUrlToBytes, bytesToBase64 } from './wavEncoder';
 
@@ -213,7 +213,10 @@ interface PosterResult {
   blobUrl: string;
 }
 
-type NarrationContext = { bgImg: HTMLImageElement; logoImg: HTMLImageElement | null; analysis: VerseAnalysis };
+// design: the verse's poster design (the AI's fonts/accent for this background), shared by the
+// posters, verse videos and meditation card so all of a verse's pieces look like one set. Null when
+// the design request failed - everything then uses the theme fonts with the photo-matched accent.
+type NarrationContext = { bgImg: HTMLImageElement; logoImg: HTMLImageElement | null; analysis: VerseAnalysis; design: Promise<PosterDesign | null> };
 
 const requestMeditationContent = (verse: DailyVerse): Promise<Record<'en' | 'ta' | 'te', MeditationText>> =>
   generateMeditationContent(verse.reference, verse.english!.text, verse.tamil!.text, verse.telugu!.text).then((resp) => resp.meditation);
@@ -714,12 +717,14 @@ const DailyVerseGenerator: React.FC = () => {
     const results: Partial<Record<VideoLangKey, VideoResult>> = {};
     const errors: string[] = [];
     const errorsByLang: Partial<Record<VideoLangKey, string>> = {};
+    // The verse's poster design (fonts/accent) - same look as the posters; null = theme fonts.
+    const design = await ctx.design.catch(() => null);
     for (const lang of langs) {
       setVideoStep(lang.key, 'active');
       try {
         const posterSet = await renderVersePosterHighlightSet(ctx.bgImg, ctx.logoImg, {
           primaryText: lang.posterText, primaryRef: lang.reference, primaryLang: lang.primaryLang,
-          fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor,
+          fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor, design: design ?? undefined,
         });
         const posterBase64 = await blobToBase64(posterSet.poster);
 
@@ -830,14 +835,15 @@ const DailyVerseGenerator: React.FC = () => {
         // Rendered once plain and once per reading-highlighter layer (copies with some verse words
         // glowing), with the poster's word boxes mapped onto the frame's poster card.
         const meditationFramesPromise = (async () => {
+          const design = (await ctx.design.catch(() => null)) ?? undefined;
           const set = await renderVersePosterHighlightSet(ctx.bgImg, ctx.logoImg, {
             primaryText: lang.posterText, primaryRef: lang.reference, primaryLang: lang.primaryLang,
-            fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor,
+            fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor, design,
           });
           const urls = [set.poster, ...set.layers].map((b) => URL.createObjectURL(b));
           try {
             const imgs = await Promise.all(urls.map(loadImage));
-            const frameOpts = { lang: lang.primaryLang, reference: lang.reference, fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor };
+            const frameOpts = { lang: lang.primaryLang, reference: lang.reference, fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor, design };
             const [frame, ...layerFrames] = await Promise.all(imgs.map((img) => renderMeditationFrame(ctx.bgImg, ctx.logoImg, img, frameOpts)));
             const rect = meditationCardRect(imgs[0].width, imgs[0].height);
             return { frameBase64: await blobToBase64(frame), layerFrames, boxes: transformBoxes(set.words, imgs[0].width, rect) };
@@ -1066,7 +1072,11 @@ const DailyVerseGenerator: React.FC = () => {
         loadImage(base64ToImageDataUrl(backgroundImageBase64!)),
         loadImage(ministryLogoUrl).catch(() => null),
       ]);
-      const ctx: NarrationContext = { bgImg, logoImg, analysis: analysis! };
+      // One look per verse: the accent matched to this photo (see accentFromImage), and the AI's poster
+      // design for it requested right away - posters, verse videos and the meditation card all use it.
+      const tunedAnalysis: VerseAnalysis = { ...analysis!, accentColor: accentFromImage(bgImg, analysis!.accentColor) };
+      const designsPromise = loadPosterDesigns(verse, backgroundImageBase64!, tunedAnalysis);
+      const ctx: NarrationContext = { bgImg, logoImg, analysis: tunedAnalysis, design: designsPromise.then((d) => d[0] ?? null) };
       narrationContextRef.current = ctx;
       setHasNarrationContext(true);
 
@@ -1079,12 +1089,12 @@ const DailyVerseGenerator: React.FC = () => {
         try {
           // Claude's designs for this background first; the poster pair is rendered with its first
           // design (Claude's top pick), or the automatic layout when none came back.
-          const designs = await loadPosterDesigns(verse, backgroundImageBase64!, analysis!);
-          postersResult = await renderAndSavePosters(verse, versePortion, bgImg, logoImg, analysis!, imageSource, designs[0]);
+          const designs = await designsPromise;
+          postersResult = await renderAndSavePosters(verse, versePortion, bgImg, logoImg, tunedAnalysis, imageSource, designs[0]);
           setStep('tamilPoster', 'done');
           setStep('teluguPoster', 'done');
           setPosters(postersResult);
-          posterContextRef.current = { verse, portion: versePortion, bgImg, logoImg, analysis: analysis!, imageSource };
+          posterContextRef.current = { verse, portion: versePortion, bgImg, logoImg, analysis: tunedAnalysis, imageSource };
           setPosterDesigns(designs);
           setSelectedDesignIdx(designs.length ? 0 : -1);
           setDesignPreviews({});
@@ -1216,16 +1226,17 @@ const DailyVerseGenerator: React.FC = () => {
         loadImage(base64ToImageDataUrl(result.backgroundImageBase64)),
         loadImage(ministryLogoUrl).catch(() => null),
       ]);
-      if (narrationContextRef.current) {
-        narrationContextRef.current = { bgImg, logoImg, analysis: result.analysis };
-      }
       const newImageSource = result.imageSource ?? 'pollinations';
       setStockImageNotice(newImageSource === 'stock');
-      // New photo = new empty space, so the previous designs no longer apply - ask again.
-      const designs = await loadPosterDesigns(verses, result.backgroundImageBase64, result.analysis);
-      const newPosters = await renderAndSavePosters(verses, lastVersePortion, bgImg, logoImg, result.analysis, newImageSource, designs[0]);
+      // New photo = new colours and new empty space: re-match the accent and ask for new designs.
+      const tunedAnalysis: VerseAnalysis = { ...result.analysis, accentColor: accentFromImage(bgImg, result.analysis.accentColor) };
+      const designs = await loadPosterDesigns(verses, result.backgroundImageBase64, tunedAnalysis);
+      if (narrationContextRef.current) {
+        narrationContextRef.current = { bgImg, logoImg, analysis: tunedAnalysis, design: Promise.resolve(designs[0] ?? null) };
+      }
+      const newPosters = await renderAndSavePosters(verses, lastVersePortion, bgImg, logoImg, tunedAnalysis, newImageSource, designs[0]);
       setPosters(newPosters);
-      posterContextRef.current = { verse: verses, portion: lastVersePortion, bgImg, logoImg, analysis: result.analysis, imageSource: newImageSource };
+      posterContextRef.current = { verse: verses, portion: lastVersePortion, bgImg, logoImg, analysis: tunedAnalysis, imageSource: newImageSource };
       setPosterDesigns(designs);
       setSelectedDesignIdx(designs.length ? 0 : -1);
       setDesignPreviews({});
