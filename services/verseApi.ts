@@ -183,8 +183,8 @@ export function generateNarrationVideo(
     fitMode?: 'cover' | 'contain-blur';
     // Reading highlighter - see components/wordHighlight.ts and server.ts's parseHighlight.
     highlight?: {
-      layerImagesBase64: string[];
-      words: { x: number; y: number; w: number; h: number; layer: number; start: number; end: number }[];
+      // Each word's glowing cut-out (PNG base64) at its box in the frame, and when it is spoken.
+      words: { x: number; y: number; w: number; h: number; layer: number; start: number; end: number; imageBase64: string }[];
     };
   }
 ): Promise<VideoGenerateResult> {

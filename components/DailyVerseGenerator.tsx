@@ -147,8 +147,31 @@ async function buildVideoHighlight(
     if (!spoken?.length && audio.audioBase64) spoken = (await alignCaptions(audio.audioBase64, verseText, lang)).words;
     const words = buildHighlightWords(boxes, spoken || []);
     if (!words) return null;
-    const layerImagesBase64 = await Promise.all(layerBlobs.map(blobToBase64));
-    return { layerImagesBase64, words };
+    // Only each word's glowing cut-out is sent, not whole highlighted frames: a few full 1920x1080
+    // layers per meditation video pushed the request past the server's size limit (HTTP 413). The
+    // server rebuilds the layers by pasting these patches onto the plain frame.
+    const urls = layerBlobs.map((b) => URL.createObjectURL(b));
+    try {
+      const layers = await Promise.all(urls.map(loadImage));
+      const patched = await Promise.all(words.map(async (w) => {
+        const img = layers[w.layer];
+        // Whole pixels, clamped to the frame - the server uses this exact box.
+        const x = Math.max(0, Math.floor(w.x)), y = Math.max(0, Math.floor(w.y));
+        const width = Math.min(img.width, Math.ceil(w.x + w.w)) - x;
+        const height = Math.min(img.height, Math.ceil(w.y + w.h)) - y;
+        if (width < 2 || height < 2) return null;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d')!.drawImage(img, x, y, width, height, 0, 0, width, height);
+        const patch = await new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('patch toBlob failed'))), 'image/png'));
+        return { x, y, w: width, h: height, layer: w.layer, start: w.start, end: w.end, imageBase64: await blobToBase64(patch) };
+      }));
+      const highlightWords = patched.filter((p): p is NonNullable<typeof p> => !!p);
+      return highlightWords.length ? { words: highlightWords } : null;
+    } finally {
+      urls.forEach((u) => URL.revokeObjectURL(u));
+    }
   } catch (err) {
     console.warn('Reading highlighter skipped:', err);
     return null;

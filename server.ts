@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import sharp from 'sharp';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import readline from 'readline';
 import { createServer as createViteServer } from 'vite';
@@ -260,26 +261,24 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Buffer {
 }
 
 // Reading-highlighter input for /api/video/generate (see the `highlight` body field there).
-type HighlightWordInput = { x: number; y: number; w: number; h: number; layer: number; start: number; end: number };
+type HighlightWordInput = { x: number; y: number; w: number; h: number; layer: number; start: number; end: number; imageBase64: string };
 const HIGHLIGHT_MAX_WORDS = 120;
-const HIGHLIGHT_MAX_LAYERS = 6;
-function parseHighlight(raw: any, frameW: number, frameH: number): { layerImagesBase64: string[]; words: HighlightWordInput[] } | null {
-  if (!raw || !Array.isArray(raw.layerImagesBase64) || !Array.isArray(raw.words)) return null;
-  const layerImagesBase64: string[] = raw.layerImagesBase64.slice(0, HIGHLIGHT_MAX_LAYERS);
-  if (!layerImagesBase64.length || layerImagesBase64.some((l) => typeof l !== 'string' || !l)) return null;
+const HIGHLIGHT_MAX_LAYERS = 12;
+function parseHighlight(raw: any, frameW: number, frameH: number): { words: HighlightWordInput[]; layerCount: number } | null {
+  if (!raw || !Array.isArray(raw.words)) return null;
   const words: HighlightWordInput[] = [];
   for (const w of raw.words.slice(0, HIGHLIGHT_MAX_WORDS)) {
-    const nums = [w?.x, w?.y, w?.w, w?.h, w?.start, w?.end].map(Number);
-    if (nums.some((n) => !Number.isFinite(n))) continue;
-    // Integer box, clamped inside the frame (crop/overlay need whole pixels within bounds).
-    const x = Math.max(0, Math.floor(nums[0])), y = Math.max(0, Math.floor(nums[1]));
-    const bw = Math.min(frameW - x, Math.ceil(nums[2])), bh = Math.min(frameH - y, Math.ceil(nums[3]));
-    const layer = Number(w.layer);
-    if (bw < 2 || bh < 2 || nums[5] <= nums[4] || nums[4] < 0) continue;
-    if (!Number.isInteger(layer) || layer < 0 || layer >= layerImagesBase64.length) continue;
-    words.push({ x, y, w: bw, h: bh, layer, start: nums[4], end: nums[5] });
+    const nums = [w?.x, w?.y, w?.w, w?.h, w?.start, w?.end, w?.layer].map(Number);
+    if (nums.some((n) => !Number.isFinite(n)) || typeof w.imageBase64 !== 'string' || !w.imageBase64) continue;
+    const [x, y, bw, bh, start, end, layer] = nums;
+    // Whole-pixel box inside the frame (the client crops its patch to exactly this box).
+    if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(bw) || !Number.isInteger(bh)) continue;
+    if (x < 0 || y < 0 || bw < 2 || bh < 2 || x + bw > frameW || y + bh > frameH) continue;
+    if (!Number.isInteger(layer) || layer < 0 || layer >= HIGHLIGHT_MAX_LAYERS || end <= start || start < 0) continue;
+    words.push({ x, y, w: bw, h: bh, layer, start, end, imageBase64: w.imageBase64 });
   }
-  return words.length ? { layerImagesBase64, words } : null;
+  if (!words.length) return null;
+  return { words, layerCount: Math.max(...words.map((w) => w.layer)) + 1 };
 }
 
 // --- Background music under the narration ---
@@ -1197,14 +1196,23 @@ app.post('/api/video/generate', async (req, res) => {
       await renderFittedFrame(imagePath, fittedMainPath);
 
       const hl = !hasIntro ? parseHighlight(highlight, width, height) : null;
+      // Rebuild each highlight layer: the plain frame with that layer's glowing word patches pasted
+      // in (words in one layer never overlap - see renderVersePosterHighlightSet).
       const hlLayerPaths: string[] = [];
+      let hlActive = hl;
       if (hl) {
-        for (let i = 0; i < hl.layerImagesBase64.length; i++) {
-          const src = path.join(tempDir, `hl-layer-${i}-src.png`);
-          const out = path.join(tempDir, `hl-layer-${i}.png`);
-          fs.writeFileSync(src, hl.layerImagesBase64[i].replace(/^data:image\/\w+;base64,/, ''), 'base64');
-          await renderFittedFrame(src, out);
-          hlLayerPaths.push(out);
+        try {
+          for (let layer = 0; layer < hl.layerCount; layer++) {
+            const out = path.join(tempDir, `hl-layer-${layer}.png`);
+            const patches = hl.words.filter((w) => w.layer === layer).map((w) => ({
+              input: Buffer.from(w.imageBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64'), left: w.x, top: w.y,
+            }));
+            await sharp(fittedMainPath).composite(patches).png().toFile(out);
+            hlLayerPaths.push(out);
+          }
+        } catch (err: any) {
+          console.warn('[video] Reading highlighter skipped (bad patch):', err?.message || err);
+          hlActive = null;
         }
       }
       let fittedIntroPath: string | null = null;
@@ -1339,10 +1347,10 @@ app.post('/api/video/generate', async (req, res) => {
         // With the reading highlighter, the opening segment runs (frame by frame, with the fade-in)
         // until just after the last highlighted word; only the static remainder takes the cheap path.
         const leadSec = wav ? VIDEO_AUDIO_LEAD_SEC : 0;
-        const hlWords = hl ? hl.words.map((w) => ({ ...w, start: w.start + leadSec, end: w.end + leadSec })) : [];
+        const hlWords = hlActive ? hlActive.words.map((w) => ({ ...w, start: w.start + leadSec, end: w.end + leadSec })) : [];
         const hlEnd = hlWords.length ? Math.min(totalDuration - fadeDur - 0.05, Math.max(...hlWords.map((w) => w.end)) + 0.3) : 0;
         let inDur = fadeDur;
-        if (hl && hlEnd > fadeDur) {
+        if (hlActive && hlEnd > fadeDur) {
           inDur = hlEnd;
           await encodeHighlightSegment(segIn, inDur, hlWords, hlLayerPaths, fadeDur);
         } else {
