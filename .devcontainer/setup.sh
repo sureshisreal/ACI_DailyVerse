@@ -24,6 +24,9 @@ if [ ! -x .edge-tts-venv/bin/edge-tts ]; then
   .edge-tts-venv/bin/pip install --quiet "edge-tts==7.3.1"
 fi
 
+# Headless Chromium for the automatic daily run (server/services/autorun.service.ts).
+command -v chromium >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq chromium; } || echo "Chromium install failed - the daily run needs it"
+
 mkdir -p .piper-voices
 BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main
 fetch() { [ -s ".piper-voices/$2" ] || curl -fsSL "$BASE/$1/$2" -o ".piper-voices/$2"; }

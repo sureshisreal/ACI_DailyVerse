@@ -18,6 +18,9 @@ if [ -r "$SECRETS_FILE" ]; then
     [ -z "${!BASH_REMATCH[1]}" ] && export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
   done < "$SECRETS_FILE"
 fi
+# India time: "tomorrow" for the daily run and SOCIAL_POST_TIME (midnight go-live) are server local
+# time, and Codespaces default to UTC - midnight UTC would be 5:30 AM in India.
+export TZ="${TZ:-Asia/Kolkata}"
 # LLM provider chain (see ai/claude.ts): Claude, then the fast free cloud fallbacks Gemini / Groq
 # (used when their GEMINI_API_KEY / GROQ_API_KEY secrets are set), then - only if installed via
 # bash .devcontainer/setup-ollama.sh - the slow local Ollama model. Without Ollama it is left out, so

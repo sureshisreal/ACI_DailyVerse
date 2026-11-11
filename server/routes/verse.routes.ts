@@ -26,6 +26,7 @@ import { upcomingPostTime } from '../utils/postTime';
 import { getWhatsAppQueue, scheduleWhatsApp, cancelWhatsApp, markWhatsAppPosted, whatsAppPosterCaption, WHATSAPP_CHANNEL_URL } from '../services/whatsapp.service';
 import { listLibrary, uploadLibraryVideo, resolveLibraryAsset } from '../services/library.service';
 import { sha256 } from '../utils/hash';
+import { startAutorun, getAutorunStatus, receiveAutorunReport } from '../services/autorun.service';
 import type { BibleThemeKey } from '../../ai/themeMapper';
 
 export const verseRouter = Router();
@@ -731,4 +732,27 @@ verseRouter.post('/instagram/sync', async (_req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Instagram sync failed.' });
   }
+});
+
+// --- Automatic daily run (see services/autorun.service.ts) ---
+// POST /api/autorun/start {date?, force?, wait?}: generate (if needed) and schedule a plan date,
+// tomorrow by default. With wait=true the response is the finished run record (kept alive by
+// keepAliveJson while it runs) - that's how scripts/autorun.sh reports the result to the GitHub Action.
+verseRouter.post('/autorun/start', async (req, res) => {
+  const { date, force, wait, dryRun } = req.body as { date?: string; force?: boolean; wait?: boolean; dryRun?: boolean };
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  const run = startAutorun({ date, force: !!force, dryRun: !!dryRun, port: Number(process.env.PORT) || 3000 });
+  if (!wait) return res.json({ started: true, status: getAutorunStatus().running });
+  res.json(await run);
+});
+
+verseRouter.get('/autorun/status', (_req, res) => {
+  res.json(getAutorunStatus());
+});
+
+// The headless page's report that its generation finished (see DailyVerseGenerator's autorun mode).
+verseRouter.post('/autorun/report', (req, res) => {
+  const { date, ok, error, videos, posters } = req.body || {};
+  if (typeof date !== 'string') return res.status(400).json({ error: 'date is required' });
+  res.json({ accepted: receiveAutorunReport({ date, ok: !!ok, error, videos, posters }) });
 });

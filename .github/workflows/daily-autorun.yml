@@ -1,0 +1,81 @@
+# Automatic daily run: wakes the DailyVerse codespace and runs scripts/autorun.sh inside it.
+#   22:00 IST - generate tomorrow's verse from the verse plan and schedule it everywhere for midnight
+#   00:05 IST - wake again so Instagram's in-app scheduler can post what just became due
+#               (YouTube and Facebook publish on their own schedule; Instagram's API has no scheduling)
+# A failed or incomplete run fails this workflow, and GitHub emails the repo owner.
+#
+# One-time setup (repo Settings > Secrets and variables > Actions):
+#   secret   CODESPACE_TOKEN - classic personal access token with the "codespace" scope, from the
+#                              account that owns the codespace
+#   variable CODESPACE_NAME  - the codespace's name (`gh codespace list`), e.g. dailyverse-jr754j69qxv5f5j5
+# Run it by hand from the Actions tab ("Run workflow") to test, optionally for a specific date.
+name: Daily verse autorun
+
+on:
+  schedule:
+    - cron: '30 16 * * *' # 22:00 IST - generate + schedule tomorrow
+    - cron: '35 18 * * *' # 00:05 IST - post due Instagram items
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'generate (verse for date, default tomorrow) or post (due Instagram items)'
+        required: true
+        default: generate
+        type: choice
+        options: [generate, post]
+      date:
+        description: 'Plan date YYYY-MM-DD (generate only; blank = tomorrow in India time)'
+        required: false
+        default: ''
+
+concurrency:
+  group: daily-autorun
+  cancel-in-progress: false
+
+jobs:
+  autorun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Pick task
+        id: task
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_TASK: ${{ inputs.task }}
+          INPUT_DATE: ${{ inputs.date }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            case "$INPUT_TASK" in generate|post) ;; *) echo "::error::task must be generate or post"; exit 1 ;; esac
+            case "$INPUT_DATE" in ''|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::date must be YYYY-MM-DD"; exit 1 ;; esac
+            echo "task=$INPUT_TASK" >> "$GITHUB_OUTPUT"
+            echo "date=$INPUT_DATE" >> "$GITHUB_OUTPUT"
+          elif [ "$SCHEDULE" = "35 18 * * *" ]; then
+            echo "task=post" >> "$GITHUB_OUTPUT"
+          else
+            echo "task=generate" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wake codespace and run
+        env:
+          GH_TOKEN: ${{ secrets.CODESPACE_TOKEN }}
+          CODESPACE: ${{ vars.CODESPACE_NAME }}
+          TASK: ${{ steps.task.outputs.task }}
+          DATE: ${{ steps.task.outputs.date }}
+        run: |
+          if [ -z "$GH_TOKEN" ] || [ -z "$CODESPACE" ]; then
+            # Not set up yet: skip quietly rather than failing (and emailing) every day until it is.
+            echo "::warning::Daily autorun is not set up - add the CODESPACE_TOKEN secret and CODESPACE_NAME variable (see the comment at the top of this workflow)."
+            exit 0
+          fi
+          case "$DATE" in ''|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::date must be YYYY-MM-DD"; exit 1 ;; esac
+          # `gh codespace ssh` starts the codespace if it is stopped. Retry a couple of times in case it
+          # is still booting.
+          for attempt in 1 2 3; do
+            gh codespace ssh -c "$CODESPACE" -- "bash /workspaces/ACI_DailyVerse/scripts/autorun.sh $TASK $DATE" && exit 0
+            code=$?
+            [ "$code" -eq 1 ] && exit 1 # the run itself reported failure - don't repeat it
+            echo "Attempt $attempt could not reach the codespace (exit $code); retrying in 60s..."
+            sleep 60
+          done
+          exit 1

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import JSZip from 'jszip';
 import { CheckCircle2, Circle, Loader2, XCircle, Download, UploadCloud, RefreshCw } from 'lucide-react';
 import ministryLogoUrl from './ACI.png';
@@ -1126,6 +1126,52 @@ const DailyVerseGenerator: React.FC = () => {
       meditationTexts: meditationTextsResult,
     };
   };
+
+  // --- Automatic daily run (server/services/autorun.service.ts) ---
+  // Opened headless at /?autorun=YYYY-MM-DD by the server: take that date's verse from the plan,
+  // generate everything (saved into output/ as usual), then report to the server, which schedules the
+  // uploads for the date's go-live time. Immediate YouTube upload is off - the server's scheduling
+  // uploads privately with a publish time instead, so nothing goes public early.
+  const autorunDate = useMemo(() => new URLSearchParams(window.location.search).get('autorun'), []);
+  const [autorunArmed, setAutorunArmed] = useState(false);
+  // StrictMode runs effects twice in development - this keeps it to one generation per page load.
+  const autorunStartedRef = useRef(false);
+  const reportAutorun = (body: Record<string, unknown>) =>
+    fetch('/api/autorun/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: autorunDate, ...body }) }).catch(() => {});
+  useEffect(() => {
+    if (!autorunDate) return;
+    const entry = getPlanEntry(autorunDate);
+    if (!entry) {
+      reportAutorun({ ok: false, error: `No verse plan entry for ${autorunDate}.` });
+      return;
+    }
+    setBulkMode(false);
+    setDate(entry.date);
+    setReference(entry.reference);
+    setIncludePoster(true);
+    setIncludeVideo(true);
+    setIncludeMeditation(true);
+    setAutoUploadYouTube(false);
+    setAutorunArmed(true); // generate on the next render, once the state above has landed
+  }, [autorunDate]);
+  useEffect(() => {
+    if (!autorunArmed || autorunStartedRef.current) return;
+    autorunStartedRef.current = true;
+    setAutorunArmed(false);
+    (async () => {
+      try {
+        const outcome = await handleGenerate();
+        reportAutorun({
+          ok: outcome.ok,
+          error: outcome.error,
+          videos: Object.keys(outcome.videos || {}).length + Object.keys(outcome.meditations || {}).length,
+          posters: outcome.posters ? 2 : 0,
+        });
+      } catch (err: any) {
+        reportAutorun({ ok: false, error: err?.message || String(err) });
+      }
+    })();
+  }, [autorunArmed]);
 
   // "Regenerate image" (single-verse mode only, next to the poster preview below): forces a brand
   // new Pollinations background for the verse currently on screen - same theme/concept/color-grade
