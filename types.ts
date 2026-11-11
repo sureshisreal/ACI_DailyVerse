@@ -43,9 +43,12 @@ export interface VerseAnalysis {
 // Claude-designed poster layout/typography (see ai/posterDesign.ts) - one design applies to both the
 // Tamil+English and Telugu+English posters. Every font is limited to families index.html actually
 // loads, so a design can never request a face that would silently fall back to a system font.
-export type PosterEnglishFont = 'playfair' | 'cormorant' | 'lora' | 'cinzel' | 'montserrat' | 'lato';
-export type PosterTamilFont = 'noto-serif-tamil' | 'noto-sans-tamil' | 'arima-madurai';
-export type PosterTeluguFont = 'noto-serif-telugu' | 'noto-sans-telugu';
+export type PosterEnglishFont = 'playfair' | 'cormorant' | 'lora' | 'cinzel' | 'montserrat' | 'lato'
+  | 'eb-garamond' | 'libre-baskerville' | 'dm-serif-display' | 'crimson-pro';
+export type PosterTamilFont = 'noto-serif-tamil' | 'noto-sans-tamil' | 'arima-madurai'
+  | 'tiro-tamil' | 'mukta-malar' | 'hind-madurai' | 'catamaran';
+export type PosterTeluguFont = 'noto-serif-telugu' | 'noto-sans-telugu'
+  | 'tiro-telugu' | 'hind-guntur' | 'anek-telugu' | 'ramabhadra';
 // Where a block sits vertically in the 4:5 frame.
 export type PosterAnchor = 'top' | 'upper' | 'middle' | 'lower' | 'bottom';
 

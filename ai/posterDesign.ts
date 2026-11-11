@@ -14,7 +14,7 @@ import type {
 } from '../types';
 
 // Bump whenever the prompt or validation below changes materially.
-export const POSTER_DESIGN_VERSION = 1;
+export const POSTER_DESIGN_VERSION = 2; // 2: more typefaces, curated accent palette, light text always
 
 const VARIANT_COUNT = 3;
 const CACHE_DIR = path.join(process.cwd(), 'cache', 'poster-design');
@@ -22,12 +22,12 @@ const CACHE_DIR = path.join(process.cwd(), 'cache', 'poster-design');
 // Must match the poster canvas in components/posterRenderer.ts (EDITORIAL_W x EDITORIAL_H).
 const POSTER_ASPECT = 1080 / 1350;
 
-const ENGLISH_FONTS: PosterEnglishFont[] = ['playfair', 'cormorant', 'lora', 'cinzel', 'montserrat', 'lato'];
-const TAMIL_FONTS: PosterTamilFont[] = ['noto-serif-tamil', 'noto-sans-tamil', 'arima-madurai'];
-const TELUGU_FONTS: PosterTeluguFont[] = ['noto-serif-telugu', 'noto-sans-telugu'];
+const ENGLISH_FONTS: PosterEnglishFont[] = ['playfair', 'cormorant', 'lora', 'cinzel', 'montserrat', 'lato', 'eb-garamond', 'libre-baskerville', 'dm-serif-display', 'crimson-pro'];
+const TAMIL_FONTS: PosterTamilFont[] = ['noto-serif-tamil', 'noto-sans-tamil', 'arima-madurai', 'tiro-tamil', 'mukta-malar', 'hind-madurai', 'catamaran'];
+const TELUGU_FONTS: PosterTeluguFont[] = ['noto-serif-telugu', 'noto-sans-telugu', 'tiro-telugu', 'hind-guntur', 'anek-telugu', 'ramabhadra'];
 const ANCHORS: PosterAnchor[] = ['top', 'upper', 'middle', 'lower', 'bottom'];
 // Italic is only loaded for these English families (see index.html).
-const ITALIC_ENGLISH_FONTS = new Set<PosterEnglishFont>(['playfair', 'cormorant', 'lora']);
+const ITALIC_ENGLISH_FONTS = new Set<PosterEnglishFont>(['playfair', 'cormorant', 'lora', 'eb-garamond', 'crimson-pro']);
 
 const SYSTEM_PROMPT = `You are an art director for a Christian devotional channel, designing bilingual Bible-verse posters (4:5, 1080x1350). Each poster shows the verse in an Indian language (Tamil or Telugu - one design is used for both) and in English, over the background photo you are shown, which is already cropped exactly as the poster frame.
 
@@ -41,17 +41,17 @@ Layout vocabulary:
 - sizeScale: 0.8 - 1.2 relative to default size. Smaller when space is tight, larger for a short verse with lots of open space.
 
 Typography vocabulary (only these exist):
-- englishFont: playfair (elegant high-contrast serif), cormorant (delicate classical serif), lora (warm readable serif), cinzel (engraved Roman capitals, formal), montserrat (clean modern sans), lato (soft modern sans).
+- englishFont: playfair (elegant high-contrast serif), cormorant (delicate classical serif), eb-garamond (timeless book serif, scholarly and reverent), libre-baskerville (stately traditional serif), crimson-pro (refined literary serif), dm-serif-display (bold contemporary display serif), lora (warm readable serif), cinzel (engraved Roman capitals, formal), montserrat (clean modern sans), lato (soft modern sans).
 - englishItalic: true/false (only honoured for playfair, cormorant, lora).
-- tamilFont: noto-serif-tamil (classic), noto-sans-tamil (clean modern), arima-madurai (warm, rounded, friendly).
-- teluguFont: noto-serif-telugu (classic), noto-sans-telugu (clean modern).
+- tamilFont (the face for the emphasised words; body text gets a matching sans automatically): noto-serif-tamil (classic serif), tiro-tamil (elegant calligraphic serif, graceful and devotional), arima-madurai (warm, rounded), mukta-malar (refined modern sans), hind-madurai (crisp contemporary sans), catamaran (strong modern display sans), noto-sans-tamil (neutral sans).
+- teluguFont (same idea): noto-serif-telugu (classic serif), tiro-telugu (elegant calligraphic serif), ramabhadra (bold traditional display), hind-guntur (crisp contemporary sans), anek-telugu (strong modern sans), noto-sans-telugu (neutral sans).
 - primaryWeight: regular | bold.
 - heroMode: firstWord (opening word(s) enlarged in the accent colour) | none (uniform, quieter).
-- heroScript: true to set the English hero in a flowing script face (good for soft, intimate moods; avoid for formal ones).
+- heroScript: always false (script faces are not used).
 - divider: flourish (ornamental) | rule (simple line) | none.
-- accentColor: 6-digit hex that harmonises with the photo's colour grade and the verse mood - elegant, never neon. Text colour (dark or light) is chosen automatically from the photo's brightness.
+- accentColor: pick from this curated palette (or a very close variant) to harmonise with the photo's own colours and the verse mood - champagne #D9B76A, antique gold #C9A24A, amber #E2A256, copper #C98455, rose gold #D69A86, dusty rose #D4A0A6, lavender #B7A3D3, slate blue #93AECB, teal mist #86B8B3, sage #A8B98E. Text is always warm white on a softly darkened photo; the accent is used only for the emphasised words, references and divider.
 
-Match the typography to the verse's mood and the photo's character (e.g. formal/majestic -> cinzel or playfair; tender/comforting -> cormorant or lora with script hero; modern/everyday scene -> montserrat or lato with noto-sans). Keep it reverent and legible - a devotional poster, not a fashion ad.
+Match the typography to the verse's mood and the photo's character (e.g. formal/majestic -> cinzel, playfair or libre-baskerville with noto-serif / ramabhadra; tender/comforting -> cormorant or eb-garamond with tiro-tamil / tiro-telugu; contemporary/everyday scene -> dm-serif-display, montserrat or lato with mukta-malar / hind-madurai / hind-guntur / anek-telugu). Keep it reverent and legible - a devotional poster, not a fashion ad.
 
 Reply with JSON only:
 {"designs":[{"name":"2-3 word label","arrangement":"stacked|split","primary":{"anchor":"...","align":"...","sizeScale":1.0},"english":{"anchor":"...","align":"...","sizeScale":1.0},"tamilFont":"...","teluguFont":"...","englishFont":"...","englishItalic":true,"primaryWeight":"bold","heroMode":"firstWord","heroScript":false,"divider":"flourish","accentColor":"#RRGGBB","rationale":"one sentence: where the clear space is and why this design fits"}]}`;

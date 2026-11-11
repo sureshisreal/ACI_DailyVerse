@@ -35,6 +35,9 @@ const PALETTE = {
 // model, so every family/weight/style combo here is guaranteed to be an actually-loaded Google Font
 // (see index.html) rather than risking a silent system-font fallback.
 interface FontStylePreset {
+  // The professional pairing used for Tamil/Telugu with this preset (see TAMIL_FACES / TELUGU_FACES).
+  tamilFace: PosterTamilFont;
+  teluguFace: PosterTeluguFont;
   englishFontFamily: string;
   englishItalic: boolean;
   englishWeight: number;
@@ -43,24 +46,32 @@ interface FontStylePreset {
 
 const FONT_STYLE_PRESETS: Record<FontStyleKey, FontStylePreset> = {
   'classic-serif': {
+    tamilFace: 'noto-serif-tamil',
+    teluguFace: 'noto-serif-telugu',
     englishFontFamily: '"Playfair Display"',
     englishItalic: true,
     englishWeight: 600,
     primaryFontFamily: { ta: '"Noto Serif Tamil", serif', te: '"Noto Serif Telugu", serif' },
   },
   'delicate-serif': {
-    englishFontFamily: '"Cormorant Garamond"',
+    tamilFace: 'tiro-tamil',
+    teluguFace: 'tiro-telugu',
+    englishFontFamily: '"EB Garamond"',
     englishItalic: true,
     englishWeight: 400,
     primaryFontFamily: { ta: '"Noto Serif Tamil", serif', te: '"Noto Serif Telugu", serif' },
   },
   'engraved-display': {
-    englishFontFamily: 'Cinzel',
+    tamilFace: 'catamaran',
+    teluguFace: 'anek-telugu',
+    englishFontFamily: '"Libre Baskerville"',
     englishItalic: false,
     englishWeight: 700,
     primaryFontFamily: { ta: '"Noto Serif Tamil", serif', te: '"Noto Serif Telugu", serif' },
   },
   'decorative-warm': {
+    tamilFace: 'arima-madurai',
+    teluguFace: 'ramabhadra',
     englishFontFamily: 'Lora',
     englishItalic: true,
     englishWeight: 400,
@@ -116,6 +127,20 @@ const FONT_PRELOAD_SPECS = [
   '400 32px "Noto Sans Telugu"',
   '700 32px "Noto Sans Telugu"',
   '900 32px "Noto Sans Telugu"',
+  // Professional pairings (see TAMIL_FACES / TELUGU_FACES / DESIGN_ENGLISH_FONTS).
+  '400 32px "Tiro Tamil"',
+  '500 32px "Mukta Malar"', '700 32px "Mukta Malar"',
+  '500 32px "Hind Madurai"', '700 32px "Hind Madurai"',
+  '500 32px Catamaran', '800 32px Catamaran',
+  '400 32px "Tiro Telugu"',
+  '500 32px "Hind Guntur"', '700 32px "Hind Guntur"',
+  '500 32px "Anek Telugu"', '700 32px "Anek Telugu"',
+  '400 32px Ramabhadra',
+  '500 32px "EB Garamond"', '700 32px "EB Garamond"',
+  '400 32px "Libre Baskerville"', '700 32px "Libre Baskerville"',
+  '400 32px "DM Serif Display"',
+  '500 32px "Crimson Pro"', '700 32px "Crimson Pro"',
+  '500 32px "Noto Sans Tamil"', '500 32px "Noto Sans Telugu"', '700 32px Montserrat',
 ];
 
 // --- Professional type system ---
@@ -127,26 +152,29 @@ const PRO_PRIMARY: Record<'ta' | 'te', { hero: string; body: string }> = {
   ta: { hero: '"Noto Serif Tamil", serif', body: '"Noto Sans Tamil", sans-serif' },
   te: { hero: '"Noto Serif Telugu", serif', body: '"Noto Sans Telugu", sans-serif' },
 };
-const PRO_INDIC_BODY_WEIGHT = 500;
-const PRO_HERO_WEIGHT = 700;
 const PRO_TEXT = '#FBF7F0';
 // Regular-weight serif body / bold emphasis per English family (only weights index.html loads).
 function proEnglishWeights(family: string): { body: number; hero: number } {
   if (family.includes('Playfair')) return { body: 500, hero: 700 };
+  if (family.includes('EB Garamond')) return { body: 500, hero: 700 };
+  if (family.includes('Baskerville')) return { body: 400, hero: 700 };
+  if (family.includes('DM Serif')) return { body: 400, hero: 400 }; // single-weight display serif
+  if (family.includes('Crimson')) return { body: 500, hero: 700 };
   if (family.includes('Cormorant')) return { body: 700, hero: 700 }; // 400 is too thin at poster sizes
   if (family.includes('Cinzel')) return { body: 400, hero: 700 };
   if (family.includes('Montserrat')) return { body: 500, hero: 700 };
   return { body: 400, hero: 700 }; // Lora, Lato
 }
-// Hero/body families for a poster's primary language. A design may choose the emphasis face; body
-// text always stays the clean sans for Tamil/Telugu.
-function proPrimaryFonts(lang: 'ta' | 'te' | 'en', englishFamily: string, design?: PosterDesign | null) {
+// Hero/body families for a poster's primary language: the AI design's face when there is one,
+// otherwise the verse theme's pairing (FONT_STYLE_PRESETS). Each face brings its own paired body font.
+function proPrimaryFonts(lang: 'ta' | 'te' | 'en', englishFamily: string, design?: PosterDesign | null, fontStyle: FontStyleKey = DEFAULT_FONT_STYLE) {
   if (lang === 'en') {
     const w = proEnglishWeights(englishFamily);
     return { hero: englishFamily, heroWeight: w.hero, body: englishFamily, bodyWeight: w.body };
   }
-  const hero = design ? (lang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont]) : PRO_PRIMARY[lang].hero;
-  return { hero, heroWeight: PRO_HERO_WEIGHT, body: PRO_PRIMARY[lang].body, bodyWeight: PRO_INDIC_BODY_WEIGHT };
+  const preset = FONT_STYLE_PRESETS[fontStyle] || FONT_STYLE_PRESETS[DEFAULT_FONT_STYLE];
+  const face = lang === 'ta' ? TAMIL_FACES[design?.tamilFont ?? preset.tamilFace] : TELUGU_FACES[design?.teluguFont ?? preset.teluguFace];
+  return { hero: face.family, heroWeight: face.hero, body: face.body.family, bodyWeight: face.body.weight };
 }
 // Reference ("MARK 10:16") font: tracked capitals for English; the clean sans for Tamil/Telugu.
 function proReferenceFont(lang: 'ta' | 'te' | 'en', px: number): string {
@@ -735,7 +763,8 @@ function accentForTheme(accentHex: string, isLight: boolean): string {
 // --- Accent colour matched to the photo ---
 // Brand-safe accents a verse's colour is matched to - warm metallics first (the ministry's gold look),
 // then soft naturals - so the accent always belongs to the image without ever going garish.
-const BRAND_ACCENTS = ['#D4A845', '#E0953A', '#C8743F', '#D98C8C', '#8FB573', '#6FA8D6', '#A38FD6'];
+// Champagne, amber, copper, rose gold, dusty rose, lavender, slate blue, teal mist, sage.
+const BRAND_ACCENTS = ['#D9B76A', '#E2A256', '#C98455', '#D69A86', '#D4A0A6', '#B7A3D3', '#93AECB', '#86B8B3', '#A8B98E'];
 
 // Picks the accent from the background's own palette: the strongest colour in the photo (by area,
 // saturation and mid-tone brightness, with warm light weighted up so a golden glow beats a big blue
@@ -1186,7 +1215,7 @@ async function renderVersePosterInternal(
     gap = 32 * scale;
     dividerGap = 56 * scale;
 
-    const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design);
+    const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design, fontStyle);
     primaryLayout = buildClauseBlock(ctx, verse.primaryText, {
       baseFont: `${pro.bodyWeight} ${primaryBaseSize}px ${pro.body}`,
       heroFont: `${pro.heroWeight} ${primaryBaseSize * heroScale}px ${pro.hero}`,
@@ -1305,7 +1334,8 @@ async function renderVersePosterInternal(
     // Light theme: a soft cream haze behind the dark text (as on the bilingual posters) - the old 8%
     // black barely registered, leaving dark text straight on bright, busy texture.
     const peak = isLight ? 0.44 : Math.min(0.66, Math.max(0.4, 0.4 + ((bandLuminance - 110) / 145) * 0.26));
-    const rgb = isLight ? '252,249,243' : '0,0,0';
+    // Warm near-black rather than pure black: darkens without turning a warm photo grey.
+    const rgb = isLight ? '252,249,243' : '18,12,8';
     const midFeather = peak * 0.83;
     const scrimGrad = ctx.createLinearGradient(0, scrimTop - feather, 0, scrimBottom + feather);
     scrimGrad.addColorStop(0, `rgba(${rgb},0)`);
@@ -1702,15 +1732,34 @@ const DESIGN_ENGLISH_FONTS: Record<PosterEnglishFont, { family: string; body: nu
   cinzel: { family: 'Cinzel', body: 700, bodyItalic: 700, hero: 900 },
   montserrat: { family: 'Montserrat', body: 500, bodyItalic: 500, hero: 800 },
   lato: { family: 'Lato', body: 400, bodyItalic: 400, hero: 900 },
+  'eb-garamond': { family: '"EB Garamond"', body: 500, bodyItalic: 500, hero: 700 },
+  'libre-baskerville': { family: '"Libre Baskerville"', body: 400, bodyItalic: 400, hero: 700 },
+  'dm-serif-display': { family: '"DM Serif Display"', body: 400, bodyItalic: 400, hero: 400 },
+  'crimson-pro': { family: '"Crimson Pro"', body: 500, bodyItalic: 500, hero: 700 },
 };
-const DESIGN_TAMIL_FONTS: Record<PosterTamilFont, string> = {
-  'noto-serif-tamil': '"Noto Serif Tamil", serif',
-  'noto-sans-tamil': '"Noto Sans Tamil", sans-serif',
-  'arima-madurai': '"Arima Madurai", serif',
+// Tamil/Telugu faces: the family for emphasised words, its weight (single-weight display faces such as
+// Tiro and Ramabhadra stay at 400 - a synthetic bold would smear them), and the body face it pairs with.
+interface IndicFace { family: string; hero: number; body: { family: string; weight: number } }
+const NOTO_SANS_TA = { family: '"Noto Sans Tamil", sans-serif', weight: 500 };
+const MUKTA_MALAR = { family: '"Mukta Malar", "Noto Sans Tamil", sans-serif', weight: 500 };
+const NOTO_SANS_TE = { family: '"Noto Sans Telugu", sans-serif', weight: 500 };
+const HIND_GUNTUR = { family: '"Hind Guntur", "Noto Sans Telugu", sans-serif', weight: 500 };
+const TAMIL_FACES: Record<PosterTamilFont, IndicFace> = {
+  'noto-serif-tamil': { family: '"Noto Serif Tamil", serif', hero: 700, body: NOTO_SANS_TA },
+  'noto-sans-tamil': { family: '"Noto Sans Tamil", sans-serif', hero: 700, body: NOTO_SANS_TA },
+  'arima-madurai': { family: '"Arima Madurai", serif', hero: 700, body: MUKTA_MALAR },
+  'tiro-tamil': { family: '"Tiro Tamil", "Noto Serif Tamil", serif', hero: 400, body: MUKTA_MALAR },
+  'mukta-malar': { family: '"Mukta Malar", "Noto Sans Tamil", sans-serif', hero: 700, body: MUKTA_MALAR },
+  'hind-madurai': { family: '"Hind Madurai", "Noto Sans Tamil", sans-serif', hero: 700, body: { family: '"Hind Madurai", "Noto Sans Tamil", sans-serif', weight: 500 } },
+  catamaran: { family: 'Catamaran, "Noto Sans Tamil", sans-serif', hero: 800, body: { family: 'Catamaran, "Noto Sans Tamil", sans-serif', weight: 500 } },
 };
-const DESIGN_TELUGU_FONTS: Record<PosterTeluguFont, string> = {
-  'noto-serif-telugu': '"Noto Serif Telugu", serif',
-  'noto-sans-telugu': '"Noto Sans Telugu", sans-serif',
+const TELUGU_FACES: Record<PosterTeluguFont, IndicFace> = {
+  'noto-serif-telugu': { family: '"Noto Serif Telugu", serif', hero: 700, body: NOTO_SANS_TE },
+  'noto-sans-telugu': { family: '"Noto Sans Telugu", sans-serif', hero: 700, body: NOTO_SANS_TE },
+  'tiro-telugu': { family: '"Tiro Telugu", "Noto Serif Telugu", serif', hero: 400, body: HIND_GUNTUR },
+  'hind-guntur': { family: '"Hind Guntur", "Noto Sans Telugu", sans-serif', hero: 700, body: HIND_GUNTUR },
+  'anek-telugu': { family: '"Anek Telugu", "Noto Sans Telugu", sans-serif', hero: 700, body: { family: '"Anek Telugu", "Noto Sans Telugu", sans-serif', weight: 500 } },
+  ramabhadra: { family: 'Ramabhadra, "Noto Serif Telugu", serif', hero: 400, body: HIND_GUNTUR },
 };
 // Vertical position of a block within the usable text area, 0 = top edge, 1 = bottom edge.
 const ANCHOR_FRACTION: Record<PosterAnchor, number> = { top: 0, upper: 0.25, middle: 0.5, lower: 0.75, bottom: 1 };
@@ -1819,7 +1868,7 @@ export async function renderCornerPoster(
   };
   const buildPrimaryBlock = (s: number, maxW: number): LangBlock => {
     const baseSize = 38 * s, heroScale = 1.8, refSize = 32 * s;
-    const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design);
+    const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design, fontStyle);
     const layout = buildClauseBlock(ctx, verse.primaryText, {
       baseFont: `${pro.bodyWeight} ${baseSize}px ${pro.body}`,
       heroFont: `${pro.heroWeight} ${baseSize * heroScale}px ${pro.hero}`,
@@ -2120,11 +2169,11 @@ export async function renderCornerPoster(
     const k = Math.min(1.75, Math.max(1, 1 + ((bandLum(top, bottom) - 100) / 155) * 0.75));
     const scrimTop = top - 40, scrimBottom = bottom + 40, feather = 70;
     const scrimGrad = ctx.createLinearGradient(0, scrimTop - feather, 0, scrimBottom + feather);
-    scrimGrad.addColorStop(0, 'rgba(0,0,0,0)');
-    scrimGrad.addColorStop(0.2, `rgba(0,0,0,${0.28 * k})`);
-    scrimGrad.addColorStop(0.5, `rgba(0,0,0,${0.36 * k})`);
-    scrimGrad.addColorStop(0.8, `rgba(0,0,0,${0.28 * k})`);
-    scrimGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    scrimGrad.addColorStop(0, 'rgba(18,12,8,0)'); // warm near-black, see renderVersePoster
+    scrimGrad.addColorStop(0.2, `rgba(18,12,8,${0.28 * k})`);
+    scrimGrad.addColorStop(0.5, `rgba(18,12,8,${0.36 * k})`);
+    scrimGrad.addColorStop(0.8, `rgba(18,12,8,${0.28 * k})`);
+    scrimGrad.addColorStop(1, 'rgba(18,12,8,0)');
     ctx.fillStyle = scrimGrad;
     ctx.fillRect(0, scrimTop - feather, width, (scrimBottom + feather) - (scrimTop - feather));
   };
@@ -3031,11 +3080,10 @@ export async function renderMeditationFrame(
   const colRight = cardX - width * 0.05;
   const colW = colRight - colLeft;
   const colCX = (colLeft + colRight) / 2;
-  const titleFamily = input.lang === 'en' ? englishFamily
-    : design ? (input.lang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont])
-    : preset.primaryFontFamily[input.lang];
+  const titlePro = proPrimaryFonts(input.lang, englishFamily, design, fontStyle);
+  const titleFamily = titlePro.hero;
   void englishItalic; // upright throughout (professional type system)
-  const titleFont = (px: number) => `700 ${px}px ${titleFamily}`;
+  const titleFont = (px: number) => `${titlePro.heroWeight} ${px}px ${titleFamily}`;
   // Reference in the shared style: tracked capitals for English, the clean sans for Tamil/Telugu.
   const refFont = (px: number) => proReferenceFont(input.lang, px * 0.62);
   const refText = proReferenceText(input.lang, input.reference);
