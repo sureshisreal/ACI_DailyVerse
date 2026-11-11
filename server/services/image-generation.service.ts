@@ -79,11 +79,13 @@ function getModel(): string {
 
 // Free community models on the keyed API (no pollen price on GEN_MODELS_URL), tried in order when
 // the account can't pay for the main model (out of pollen credits). Lower quality than the paid
-// default - FLUX.2 dev returns 1024x1024 whatever size is asked (cover-cropped later), SDXL
-// Lightning looks more illustrated - but each is generated from this verse's prompt and still goes
-// through the background review, which beats an unrelated stock photo. Verified working 2026-11-11.
-// Override with POLLINATIONS_FREE_MODELS (comma list; empty string disables).
-const DEFAULT_FREE_MODELS = 'community/scriptsnsenses-sys/flux-2-dev-free,community/scriptsnsenses-sys/sdxl-lightning-free';
+// default, but each is generated from this verse's prompt and still goes through the background
+// review, which beats an unrelated stock photo. SDXL Lightning first: it honours the requested
+// portrait size. FLUX.2 dev always returns 1024x1024, so its output is cropped to the requested
+// aspect ratio (see fitToRequestedAspect) - otherwise the review rejects it outright as not
+// portrait. Verified working 2026-11-11. Override with POLLINATIONS_FREE_MODELS (comma list; empty
+// string disables).
+const DEFAULT_FREE_MODELS = 'community/scriptsnsenses-sys/sdxl-lightning-free,community/scriptsnsenses-sys/flux-2-dev-free';
 function getFreeModels(): string[] {
   const raw = process.env.POLLINATIONS_FREE_MODELS ?? DEFAULT_FREE_MODELS;
   return raw.split(',').map((m) => m.trim()).filter((m) => m && m !== getModel());
@@ -255,6 +257,22 @@ function buildLegacyUrl(req: GenerateBackgroundRequest, width: number, height: n
 // The legacy keyless endpoint stamps "pollinations.ai" into the bottom-right corner (~4% of the
 // height) regardless of nologo. Trim the bottom 6% so it never reaches a poster or video frame -
 // the renderers cover-fit whatever aspect comes back, so the slightly shorter image is harmless.
+// Some models ignore the requested size (FLUX.2 dev free always returns a square). Center-crop to
+// the requested aspect ratio and resize to the requested size, so the poster layout and the
+// background review get the portrait frame they expect. No-op when the shape already matches.
+async function fitToRequestedAspect(buffer: Buffer, contentType: string, width: number, height: number): Promise<{ buffer: Buffer; contentType: string }> {
+  try {
+    const meta = await sharp(buffer).metadata();
+    if (!meta.width || !meta.height) return { buffer, contentType };
+    if (Math.abs(meta.width / meta.height - width / height) < 0.02) return { buffer, contentType };
+    const resized = await sharp(buffer).resize(width, height, { fit: 'cover', position: 'centre' }).jpeg({ quality: 92 }).toBuffer();
+    return { buffer: resized, contentType: 'image/jpeg' };
+  } catch (err) {
+    console.warn('[image-generation] Aspect fit failed, keeping image as-is:', err instanceof Error ? err.message : err);
+    return { buffer, contentType };
+  }
+}
+
 async function cropLegacyWatermark(buffer: Buffer, contentType: string): Promise<{ buffer: Buffer; contentType: string }> {
   try {
     const img = sharp(buffer);
@@ -360,6 +378,7 @@ export async function generateBackground(req: GenerateBackgroundRequest): Promis
     try {
       let { buffer, contentType } = await fetchFromPollinations(url, useKey);
       if (!useKey) ({ buffer, contentType } = await cropLegacyWatermark(buffer, contentType));
+      ({ buffer, contentType } = await fitToRequestedAspect(buffer, contentType, width, height));
       if (!req.skipCacheWrite) writeImageCache(req.cacheKey, buffer);
       return { imageBase64: buffer.toString('base64'), contentType, width, height, cached: false, source: 'pollinations' };
     } catch (err) {

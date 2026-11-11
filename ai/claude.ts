@@ -66,7 +66,8 @@ const modelCooldownUntil: Record<string, number> = {};
 // where qwen3.8 did not. Text-only - image calls get a 400 and move on to the next provider.
 // If it isn't live, another is picked from /models.
 const GROQ_PREFERRED_MODEL = 'openai/gpt-oss-120b';
-const PROVIDER_COOLDOWN_MINUTES = 10;
+// Short: the usual cause is a brief overload spike or a per-minute rate limit, not an outage.
+const PROVIDER_COOLDOWN_MINUTES = 3;
 const cooldownUntil: Partial<Record<ProviderName, number>> = {};
 
 function getProviderChain(): ProviderName[] {
@@ -126,38 +127,46 @@ async function callProvider(provider: ProviderName, call: ModelCall): Promise<st
         throw err;
       }
     }
-    case 'gemini': {
-      const models = (process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODELS).split(',').map((m) => m.trim()).filter(Boolean);
-      const ready = models.filter((m) => (modelCooldownUntil[`gemini:${m}`] || 0) <= Date.now());
-      let lastErr: unknown;
-      for (const model of ready.length ? ready : models) {
-        try {
-          return await callOpenAICompatible(call, {
-            name: 'Gemini',
-            baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-            apiKey: process.env.GEMINI_API_KEY,
-            model,
-          });
-        } catch (err) {
-          // A bad/missing key fails every model the same way - stop and let the chain move on.
-          if (!(err instanceof ProviderUnavailable) || /api.key/i.test(err.message)) throw err;
-          lastErr = err;
-          if (err.cooldown) modelCooldownUntil[`gemini:${model}`] = Date.now() + MODEL_COOLDOWN_MINUTES * 60_000;
-          console.warn(`[llm] Gemini ${model} failed (${err.message.slice(0, 120)}); trying next Gemini model.`);
-        }
-      }
-      throw lastErr;
-    }
+    case 'gemini':
+      return tryModels('Gemini', (process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODELS).split(','), (model) => callOpenAICompatible(call, {
+        name: 'Gemini',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        apiKey: process.env.GEMINI_API_KEY,
+        model,
+      }));
     case 'groq':
-      return callOpenAICompatible(call, {
+      return tryModels('Groq', process.env.GROQ_MODEL ? process.env.GROQ_MODEL.split(',') : await pickGroqModels(), (model) => callOpenAICompatible(call, {
         name: 'Groq',
         baseUrl: 'https://api.groq.com/openai/v1',
         apiKey: process.env.GROQ_API_KEY,
-        model: process.env.GROQ_MODEL || await pickGroqModel(),
-      });
+        model,
+      }));
     case 'ollama':
       return callOllama(call);
   }
+}
+
+// Tries a provider's models in order. Free tiers fail per model - Gemini models are briefly
+// overloaded (503) or hang, Groq rate-limits each model separately (429) - so a model that fails
+// that way is skipped for MODEL_COOLDOWN_MINUTES and the next is tried before giving up on the
+// provider.
+async function tryModels(name: string, modelList: string[], attempt: (model: string) => Promise<string>): Promise<string> {
+  const models = modelList.map((m) => m.trim()).filter(Boolean);
+  const key = (m: string) => `${name}:${m}`;
+  const ready = models.filter((m) => (modelCooldownUntil[key(m)] || 0) <= Date.now());
+  let lastErr: unknown;
+  for (const model of ready.length ? ready : models) {
+    try {
+      return await attempt(model);
+    } catch (err) {
+      // A bad/missing key fails every model the same way - stop and let the chain move on.
+      if (!(err instanceof ProviderUnavailable) || /api.key/i.test(err.message)) throw err;
+      lastErr = err;
+      if (err.cooldown) modelCooldownUntil[key(model)] = Date.now() + MODEL_COOLDOWN_MINUTES * 60_000;
+      console.warn(`[llm] ${name} ${model} failed (${err.message.slice(0, 120)}); trying next ${name} model.`);
+    }
+  }
+  throw lastErr;
 }
 
 async function callModel(call: ModelCall): Promise<string> {
@@ -224,7 +233,7 @@ async function callOpenAICompatible(
     // 400 is often request-specific (e.g. image sent to a text-only model): skip for this call only.
     // Gemini reports a bad key as 400 too - that one does deserve the cooldown.
     if (res.status === 400) throw new ProviderUnavailable(msg, /api.key/i.test(bodyText));
-    if (res.status === 404 && cfg.name === 'Groq') groqModel = null; // model retired - re-pick next time
+    if (res.status === 404 && cfg.name === 'Groq') groqModels = null; // model retired - re-list next time
     throw new ProviderUnavailable(msg);
   }
   let data: any;
@@ -236,26 +245,28 @@ async function callOpenAICompatible(
   return text;
 }
 
-// Groq retires models often, so rather than hard-code one, use the preferred model if it's live,
-// otherwise the first general chat model the account can see. Cached for the process.
-let groqModel: string | null = null;
-async function pickGroqModel(): Promise<string> {
-  if (groqModel) return groqModel;
+// Groq retires models often, so rather than hard-code a list, take the live general chat models the
+// account can see, preferred ones first (gpt-oss-120b used correct Christian Tamil/Telugu terms in
+// testing; gpt-oss-20b is the closest smaller sibling). Several, not one: Groq's free-tier rate
+// limits are per model. Cached for the process.
+const GROQ_MODEL_PREFERENCE = [GROQ_PREFERRED_MODEL, 'openai/gpt-oss-20b'];
+let groqModels: string[] | null = null;
+async function pickGroqModels(): Promise<string[]> {
+  if (groqModels) return groqModels;
   try {
     const res = await fetch('https://api.groq.com/openai/v1/models', {
       headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
       signal: AbortSignal.timeout(15_000),
     });
-    if (!res.ok) return GROQ_PREFERRED_MODEL;
+    if (!res.ok) return [GROQ_PREFERRED_MODEL];
     const ids: string[] = ((await res.json())?.data || []).filter((m: any) => m?.active !== false).map((m: any) => String(m.id));
-    groqModel = ids.find((id) => id === GROQ_PREFERRED_MODEL)
-      || ids.find((id) => /llama-4/i.test(id))
-      || ids.find((id) => /gpt-oss|llama|qwen|kimi/i.test(id) && !/guard|safeguard|whisper|tts|prompt|orpheus/i.test(id))
-      || GROQ_PREFERRED_MODEL;
-    console.log(`[llm] Groq model: ${groqModel}`);
-    return groqModel;
+    const general = ids.filter((id) => /gpt-oss|llama|qwen|kimi/i.test(id) && !/guard|safeguard|whisper|tts|prompt|orpheus/i.test(id));
+    groqModels = [...GROQ_MODEL_PREFERENCE.filter((m) => general.includes(m)), ...general.filter((m) => !GROQ_MODEL_PREFERENCE.includes(m))];
+    if (!groqModels.length) groqModels = [GROQ_PREFERRED_MODEL];
+    console.log(`[llm] Groq models: ${groqModels.join(', ')}`);
+    return groqModels;
   } catch {
-    return GROQ_PREFERRED_MODEL;
+    return [GROQ_PREFERRED_MODEL];
   }
 }
 
