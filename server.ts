@@ -180,6 +180,29 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Buffer {
   return Buffer.concat([header, data]);
 }
 
+// Reading-highlighter input for /api/video/generate (see the `highlight` body field there).
+type HighlightWordInput = { x: number; y: number; w: number; h: number; layer: number; start: number; end: number };
+const HIGHLIGHT_MAX_WORDS = 120;
+const HIGHLIGHT_MAX_LAYERS = 6;
+function parseHighlight(raw: any, frameW: number, frameH: number): { layerImagesBase64: string[]; words: HighlightWordInput[] } | null {
+  if (!raw || !Array.isArray(raw.layerImagesBase64) || !Array.isArray(raw.words)) return null;
+  const layerImagesBase64: string[] = raw.layerImagesBase64.slice(0, HIGHLIGHT_MAX_LAYERS);
+  if (!layerImagesBase64.length || layerImagesBase64.some((l) => typeof l !== 'string' || !l)) return null;
+  const words: HighlightWordInput[] = [];
+  for (const w of raw.words.slice(0, HIGHLIGHT_MAX_WORDS)) {
+    const nums = [w?.x, w?.y, w?.w, w?.h, w?.start, w?.end].map(Number);
+    if (nums.some((n) => !Number.isFinite(n))) continue;
+    // Integer box, clamped inside the frame (crop/overlay need whole pixels within bounds).
+    const x = Math.max(0, Math.floor(nums[0])), y = Math.max(0, Math.floor(nums[1]));
+    const bw = Math.min(frameW - x, Math.ceil(nums[2])), bh = Math.min(frameH - y, Math.ceil(nums[3]));
+    const layer = Number(w.layer);
+    if (bw < 2 || bh < 2 || nums[5] <= nums[4] || nums[4] < 0) continue;
+    if (!Number.isInteger(layer) || layer < 0 || layer >= layerImagesBase64.length) continue;
+    words.push({ x, y, w: bw, h: bh, layer, start: nums[4], end: nums[5] });
+  }
+  return words.length ? { layerImagesBase64, words } : null;
+}
+
 // Video pacing: silence around the narration, and the fade from/to black at each end.
 const VIDEO_AUDIO_LEAD_SEC = 0.7;
 const VIDEO_AUDIO_TAIL_SEC = 1.2;
@@ -737,7 +760,8 @@ type TtsEngine = 'edge' | 'local';
 function getTtsEngine(): TtsEngine {
   return (process.env.TTS_ENGINE || 'local').toLowerCase() === 'edge' ? 'edge' : 'local';
 }
-const EDGE_TTS_BIN = path.join(process.cwd(), '.edge-tts-venv', 'bin', 'edge-tts');
+const EDGE_TTS_PYTHON = path.join(process.cwd(), '.edge-tts-venv', 'bin', 'python3');
+const EDGE_TTS_SCRIPT = path.join(process.cwd(), 'scripts', 'edge_tts_synthesize.py');
 // Female voices, matching the local ones (Piper en_GB cori, te_IN padmavathi, Indic-Parler Jaya).
 const EDGE_TTS_VOICES: Record<'ta' | 'te' | 'en', string> = {
   ta: process.env.EDGE_TTS_VOICE_TA || 'ta-IN-PallaviNeural',
@@ -749,14 +773,20 @@ const EDGE_TTS_RATE = process.env.EDGE_TTS_RATE || '-10%';
 const EDGE_TTS_TIMEOUT_MS = 120_000;
 const EDGE_TTS_ATTEMPTS = 2;
 
-async function synthesizeWithEdgeOnce(text: string, lang: 'ta' | 'te' | 'en'): Promise<string | null> {
+// Audio (24kHz PCM16 base64) plus when each word is spoken - the timings drive the video's
+// reading highlighter (see /api/video/generate's `highlight`).
+type NarrationAudio = { audioBase64: string; words: WordTiming[] };
+
+async function synthesizeWithEdgeOnce(text: string, lang: 'ta' | 'te' | 'en'): Promise<NarrationAudio> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edge-tts-'));
   try {
     const textPath = path.join(tempDir, 'in.txt');
     const mp3Path = path.join(tempDir, 'out.mp3');
+    const wordsPath = path.join(tempDir, 'words.json');
     fs.writeFileSync(textPath, text, 'utf8'); // a file, not argv - meditation text is long
     await new Promise<void>((resolve, reject) => {
-      const proc = spawn(EDGE_TTS_BIN, ['--voice', EDGE_TTS_VOICES[lang], `--rate=${EDGE_TTS_RATE}`, '--file', textPath, '--write-media', mp3Path]);
+      const proc = spawn(EDGE_TTS_PYTHON, [EDGE_TTS_SCRIPT, '--voice', EDGE_TTS_VOICES[lang], `--rate=${EDGE_TTS_RATE}`,
+        '--text-file', textPath, '--out-audio', mp3Path, '--out-words', wordsPath]);
       let stderr = '';
       const timer = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error(`edge-tts timed out after ${EDGE_TTS_TIMEOUT_MS / 1000}s`)); }, EDGE_TTS_TIMEOUT_MS);
       proc.stderr.on('data', (d) => { stderr += d; });
@@ -764,15 +794,17 @@ async function synthesizeWithEdgeOnce(text: string, lang: 'ta' | 'te' | 'en'): P
       proc.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`edge-tts exited ${code}: ${stderr.slice(-300)}`)); });
     });
     if (!fs.existsSync(mp3Path) || fs.statSync(mp3Path).size < 1000) throw new Error('edge-tts produced no audio');
-    return await applyDevotionalPostProcessing(mp3Path, tempDir);
+    let words: WordTiming[] = [];
+    try { words = JSON.parse(fs.readFileSync(wordsPath, 'utf8')); } catch { /* timings are optional polish */ }
+    return { audioBase64: await applyDevotionalPostProcessing(mp3Path, tempDir), words };
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
-async function synthesizeWithEdge(text: string, lang: 'ta' | 'te' | 'en'): Promise<string | null> {
-  if (!fs.existsSync(EDGE_TTS_BIN)) {
-    console.warn(`[tts] TTS_ENGINE=edge but ${EDGE_TTS_BIN} is missing - run: python3 -m venv .edge-tts-venv && .edge-tts-venv/bin/pip install edge-tts`);
+async function synthesizeWithEdge(text: string, lang: 'ta' | 'te' | 'en'): Promise<NarrationAudio | null> {
+  if (!fs.existsSync(EDGE_TTS_PYTHON)) {
+    console.warn(`[tts] TTS_ENGINE=edge but ${EDGE_TTS_PYTHON} is missing - run: python3 -m venv .edge-tts-venv && .edge-tts-venv/bin/pip install edge-tts`);
     return null;
   }
   for (let attempt = 1; attempt <= EDGE_TTS_ATTEMPTS; attempt++) {
@@ -793,12 +825,13 @@ async function synthesizeWithEdge(text: string, lang: 'ta' | 'te' | 'en'): Promi
 // instead of starting its own. Failed (null) results are dropped so a retry synthesizes afresh.
 // Bounded: each entry is a few MB of PCM, and only the latest verse's clips are ever reused.
 const NARRATION_CACHE_MAX = 24;
-const narrationCache = new Map<string, Promise<{ audioBase64: string | null; provider: string }>>();
+type CachedNarration = { audioBase64: string | null; provider: string; words?: WordTiming[] };
+const narrationCache = new Map<string, Promise<CachedNarration>>();
 
 function synthesizeNarrationCached(
   narration: string,
-  synthesize: () => Promise<{ audioBase64: string | null; provider: string }>
-): Promise<{ audioBase64: string | null; provider: string }> {
+  synthesize: () => Promise<CachedNarration>
+): Promise<CachedNarration> {
   const cached = narrationCache.get(narration);
   if (cached) return cached;
   const pending = synthesize().then((result) => {
@@ -841,17 +874,18 @@ app.post('/api/verse-audio', async (req, res) => {
     : isTeluguScript ? `${text}. ${speakableReference(reference, 'te')} నుండి.`
     : `${text}. Reading from ${speakableReference(reference, 'en')}.`;
   const lang: 'ta' | 'te' | 'en' = isTamilScript ? 'ta' : isTeluguScript ? 'te' : 'en';
-  const { audioBase64, provider } = await synthesizeNarrationCached(narration, async () => {
+  const { audioBase64, provider, words } = await synthesizeNarrationCached(narration, async () => {
     if (getTtsEngine() === 'edge') {
       const edgeAudio = await synthesizeWithEdge(narration, lang);
-      if (edgeAudio) return { audioBase64: edgeAudio, provider: 'edge' };
+      if (edgeAudio) return { audioBase64: edgeAudio.audioBase64, provider: 'edge', words: edgeAudio.words };
       console.warn(`[tts] Edge voice failed for ${lang}; falling back to the local voice (slow on CPU-only hosts).`);
     }
     if (isTamilScript) return synthesizeTamil(narration);
     return { audioBase64: await synthesizeWithPiperQA(narration, isTeluguScript ? 'te' : 'en'), provider: 'piper' };
   });
   if (audioBase64) {
-    return res.json({ audioBase64, provider });
+    // words: per-word timings when the engine provides them (Edge) - for the reading highlighter.
+    return res.json({ audioBase64, provider, ...(words?.length ? { words } : {}) });
   }
 
   res.json({ audioBase64: null, error: `Local ${isTamilScript ? 'Tamil TTS' : 'Piper'} synthesis unavailable for verse audio.` });
@@ -882,7 +916,12 @@ app.post('/api/video/generate', async (req, res) => {
       // and hero-clause layout are tightly tuned for a tall narrow frame and weren't rewritten for
       // landscape) - 'cover' on a portrait image forced into a landscape frame would crop out almost
       // all of the verse text instead of just the frame's edges.
-      fitMode = 'cover'
+      fitMode = 'cover',
+      // Reading highlighter (optional): copies of the frame ("layers") with some verse words drawn
+      // glowing, and each word's box (frame pixels), layer and spoken time (seconds into the
+      // narration). Each word's box is cut out of its layer and shown while it is read - see
+      // components/wordHighlight.ts and posterRenderer.ts's renderVersePosterHighlightSet.
+      highlight
     } = req.body as { fitMode?: 'cover' | 'contain-blur'; [key: string]: any };
 
     if (!imageBase64 || !audioBase64) {
@@ -973,6 +1012,18 @@ app.post('/api/video/generate', async (req, res) => {
 
       const fittedMainPath = path.join(tempDir, 'fitted-main.png');
       await renderFittedFrame(imagePath, fittedMainPath);
+
+      const hl = !hasIntro ? parseHighlight(highlight, width, height) : null;
+      const hlLayerPaths: string[] = [];
+      if (hl) {
+        for (let i = 0; i < hl.layerImagesBase64.length; i++) {
+          const src = path.join(tempDir, `hl-layer-${i}-src.png`);
+          const out = path.join(tempDir, `hl-layer-${i}.png`);
+          fs.writeFileSync(src, hl.layerImagesBase64[i].replace(/^data:image\/\w+;base64,/, ''), 'base64');
+          await renderFittedFrame(src, out);
+          hlLayerPaths.push(out);
+        }
+      }
       let fittedIntroPath: string | null = null;
       if (hasIntro && introImagePath) {
         fittedIntroPath = path.join(tempDir, 'fitted-intro.png');
@@ -1039,7 +1090,6 @@ app.post('/api/video/generate', async (req, res) => {
       const useSegmented = !hasIntro && totalDuration != null && fadeDur > 0 && totalDuration > fadeDur * 2 + 0.1;
 
       if (useSegmented && totalDuration != null) {
-        const midDur = totalDuration - fadeDur * 2;
         const segmentOptions = [
           '-c:v libx264', '-tune stillimage', '-preset veryfast',
           `-r ${fps}`, '-pix_fmt yuv420p', '-an',
@@ -1058,17 +1108,60 @@ app.post('/api/video/generate', async (req, res) => {
               .run();
           });
 
+        // Opening segment with the reading highlighter: each word's box is cropped from the even/odd
+        // highlighted copy and overlaid on the plain frame while that word is spoken. The graph goes
+        // in a script file - it has two filters per word and can get long.
+        const encodeHighlightSegment = (outPath: string, durationSec: number, words: HighlightWordInput[], layerPaths: string[], fadeInSec: number) =>
+          new Promise<void>((resolve, reject) => {
+            const parts: string[] = [];
+            layerPaths.forEach((_, layer) => {
+              const idx = words.map((w, i) => (w.layer === layer ? i : -1)).filter((i) => i >= 0);
+              if (idx.length) parts.push(`[${layer + 1}:v]split=${idx.length}${idx.map((i) => `[s${i}]`).join('')}`);
+            });
+            words.forEach((w, i) => parts.push(`[s${i}]crop=${w.w}:${w.h}:${w.x}:${w.y}[c${i}]`));
+            let last = '0:v';
+            words.forEach((w, i) => {
+              parts.push(`[${last}][c${i}]overlay=${w.x}:${w.y}:enable='between(t,${w.start.toFixed(3)},${w.end.toFixed(3)})'[o${i}]`);
+              last = `o${i}`;
+            });
+            parts.push(`[${last}]fade=t=in:st=0:d=${fadeInSec.toFixed(3)},format=yuv420p[vout]`);
+            const graphPath = path.join(tempDir, 'highlight-graph.txt');
+            fs.writeFileSync(graphPath, parts.join(';\n'));
+            const loopIn = ['-loop', '1', '-framerate', String(fps)];
+            const cmd = ffmpeg().input(fittedMainPath).inputOptions(loopIn);
+            layerPaths.forEach((lp) => cmd.input(lp).inputOptions(loopIn));
+            cmd
+              .outputOptions([...segmentOptions, '-filter_complex_script', graphPath, '-map', '[vout]', '-t', durationSec.toFixed(3)])
+              .output(outPath)
+              .on('end', () => resolve())
+              .on('error', (err) => reject(err))
+              .run();
+          });
+
         const segIn = path.join(tempDir, 'seg-in.mp4');
         const segMid = path.join(tempDir, 'seg-mid.mp4');
         const segOut = path.join(tempDir, 'seg-out.mp4');
-        await encodeSegment(segIn, fadeDur, fps, `fade=t=in:st=0:d=${fadeDur.toFixed(3)}`);
-        await encodeSegment(segMid, midDur, 1);
+        // With the reading highlighter, the opening segment runs (frame by frame, with the fade-in)
+        // until just after the last highlighted word; only the static remainder takes the cheap path.
+        const leadSec = wav ? VIDEO_AUDIO_LEAD_SEC : 0;
+        const hlWords = hl ? hl.words.map((w) => ({ ...w, start: w.start + leadSec, end: w.end + leadSec })) : [];
+        const hlEnd = hlWords.length ? Math.min(totalDuration - fadeDur - 0.05, Math.max(...hlWords.map((w) => w.end)) + 0.3) : 0;
+        let inDur = fadeDur;
+        if (hl && hlEnd > fadeDur) {
+          inDur = hlEnd;
+          await encodeHighlightSegment(segIn, inDur, hlWords, hlLayerPaths, fadeDur);
+        } else {
+          await encodeSegment(segIn, fadeDur, fps, `fade=t=in:st=0:d=${fadeDur.toFixed(3)}`);
+        }
+        const restDur = totalDuration - inDur - fadeDur;
+        if (restDur > 0.05) await encodeSegment(segMid, restDur, 1);
         await encodeSegment(segOut, fadeDur, fps, `fade=t=out:st=0:d=${fadeDur.toFixed(3)}`);
 
-        // All three came from the same source frame through the same encoder settings, so their
+        // All came from the same source frame through the same encoder settings, so their
         // streams are concat-compatible and the video can be copied through rather than re-encoded.
         const concatListPath = path.join(tempDir, 'concat.txt');
-        fs.writeFileSync(concatListPath, [segIn, segMid, segOut].map((p) => `file '${p}'`).join('\n'));
+        const segments = restDur > 0.05 ? [segIn, segMid, segOut] : [segIn, segOut];
+        fs.writeFileSync(concatListPath, segments.map((p) => `file '${p}'`).join('\n'));
 
         await new Promise<void>((resolve, reject) => {
           ffmpeg()

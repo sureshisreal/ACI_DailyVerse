@@ -119,10 +119,17 @@ const FONT_PRELOAD_SPECS = [
 ];
 
 let fontsPreloadedPromise: Promise<void> | null = null;
+// Latin, Tamil and Telugu characters - see ensurePosterFontsPreloaded.
+const FONT_PRELOAD_SAMPLE = 'Aa1 கர்த்தர் தேவன் దేవుడు ప్రభువు';
 export function ensurePosterFontsPreloaded(): Promise<void> {
   if (!fontsPreloadedPromise) {
+    // The sample text matters: Google Fonts splits each family into per-script files (unicode-range),
+    // and document.fonts.load only fetches the files covering its sample text - Latin by default. Without
+    // Tamil/Telugu samples those glyph files only arrived after the first Tamil/Telugu draw, so the
+    // first render in a session measured and laid out text with a fallback font (different line
+    // breaks and sizes from every later render of the same poster).
     fontsPreloadedPromise = Promise.all(
-      FONT_PRELOAD_SPECS.map(spec => document.fonts.load(spec).catch(() => {}))
+      FONT_PRELOAD_SPECS.map(spec => document.fonts.load(spec, FONT_PRELOAD_SAMPLE).catch(() => {}))
     ).then(() => undefined);
   }
   return fontsPreloadedPromise;
@@ -678,11 +685,79 @@ function pickTheme(bandLuminance: number, accentHex: string): PosterTheme {
 // Draws a clause block's text lines - the hero clause in the theme's accent color and italic
 // weight, the rest in the theme's base color - starting at `startY` and centered at `alignX`.
 // Returns the Y position immediately after the block.
-function paintClauseBlock(ctx: CanvasRenderingContext2D, layout: ClauseBlockLayout, startY: number, alignX: number, theme: PosterTheme, align: CanvasTextAlign = 'center'): number {
+// --- Reading highlighter support (see renderVersePosterHighlightSet) ---
+// One entry per verse word, in reading order: the word's glow-padded box in canvas pixels, the
+// word's own position (for redrawing it glowing), and its layer - which highlighted copy of the
+// poster its cut-out comes from (assigned so no two words in a layer have overlapping boxes).
+export interface PosterWordBox {
+  text: string; x: number; y: number; w: number; h: number; layer: number;
+  textX: number; textY: number; font: string; glow: number;
+}
+interface WordHighlightPass {
+  boxes: PosterWordBox[];     // filled in reading order as lines are painted
+  glowWords?: Set<number>;    // word indexes to draw glowing in this pass
+  glowColor: string;
+  textColor: string;
+}
+
+// Measures each space-separated word of a line. The box includes room for the glow to fade out
+// fully, so the video's cut-out of a glowing word has no visible edge.
+function measureLineWords(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, align: CanvasTextAlign, hl: WordHighlightPass) {
+  const lineW = ctx.measureText(text).width;
+  const startX = align === 'center' ? x - lineW / 2 : align === 'right' || align === 'end' ? x - lineW : x;
+  const m = ctx.measureText(text);
+  const fontPx = Number(/(\d+(?:\.\d+)?)px/.exec(ctx.font)?.[1] || 40);
+  const ascent = m.actualBoundingBoxAscent || fontPx * 0.62;
+  const descent = m.actualBoundingBoxDescent || fontPx * 0.32;
+  const glow = Math.max(10, fontPx * 0.32);
+  const pad = glow * 1.6;
+  const re = /\S+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    const wx = startX + ctx.measureText(text.slice(0, match.index)).width;
+    const ww = ctx.measureText(match[0]).width;
+    hl.boxes.push({
+      text: match[0], layer: 0, textX: wx, textY: y, font: ctx.font, glow,
+      x: wx - pad, y: y - ascent - pad, w: ww + pad * 2, h: ascent + descent + pad * 2,
+    });
+  }
+}
+
+// Redraws the selected words glowing: bright text with a soft halo in the accent colour, layered
+// twice so the halo is visible on a busy photo.
+function paintGlowingWords(ctx: CanvasRenderingContext2D, hl: WordHighlightPass, fromIndex: number) {
+  if (!hl.glowWords) return;
+  for (let i = fromIndex; i < hl.boxes.length; i++) {
+    if (!hl.glowWords.has(i)) continue;
+    const b = hl.boxes[i];
+    ctx.save();
+    ctx.font = b.font;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = hl.textColor;
+    ctx.shadowColor = hl.glowColor;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.shadowBlur = b.glow;
+    ctx.fillText(b.text, b.textX, b.textY);
+    ctx.shadowBlur = b.glow * 0.45;
+    ctx.fillText(b.text, b.textX, b.textY);
+    ctx.restore();
+  }
+}
+
+function paintClauseBlock(ctx: CanvasRenderingContext2D, layout: ClauseBlockLayout, startY: number, alignX: number, theme: PosterTheme, align: CanvasTextAlign = 'center', hl?: WordHighlightPass): number {
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
   for (const line of layout.lines) {
     const y = startY + line.offset + line.lineHeight / 2;
+    const firstWord = hl ? hl.boxes.length : 0;
+    if (hl) {
+      ctx.save();
+      ctx.font = line.font;
+      measureLineWords(ctx, line.text, alignX, y, align, hl);
+      ctx.restore();
+    }
     ctx.save();
     ctx.font = line.font;
     ctx.fillStyle = line.isHero ? theme.heroColor : theme.baseColor;
@@ -695,6 +770,7 @@ function paintClauseBlock(ctx: CanvasRenderingContext2D, layout: ClauseBlockLayo
     ctx.shadowOffsetY = line.isHero ? (theme.isLight ? 1 : 5) : (theme.isLight ? 0 : 3);
     ctx.fillText(line.text, alignX, y);
     ctx.restore();
+    if (hl) paintGlowingWords(ctx, hl, firstWord);
   }
   return startY + layout.totalHeight;
 }
@@ -838,6 +914,61 @@ export async function renderVersePoster(
   logoImg: HTMLImageElement | null,
   verse: PosterVerseInput
 ): Promise<Blob> {
+  return (await renderVersePosterInternal(bgImg, logoImg, verse)).blob;
+}
+
+// The plain poster, plus a few copies with some verse words drawn glowing, plus every verse word's
+// box. The video cuts each word's box out of the copy where it glows and shows it while that word is
+// spoken. Words are spread over layers (copies) so that no two words in one copy have overlapping
+// boxes - otherwise a cut-out would carry part of a neighbour's glow. Usually 2-3 layers.
+export async function renderVersePosterHighlightSet(
+  bgImg: HTMLImageElement | null,
+  logoImg: HTMLImageElement | null,
+  verse: PosterVerseInput
+): Promise<{ poster: Blob; layers: Blob[]; words: PosterWordBox[] }> {
+  const overlaps = (p: PosterWordBox, q: PosterWordBox) =>
+    p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h;
+  const sameLayout = (a: PosterWordBox[], b: PosterWordBox[]) =>
+    a.length === b.length && a.every((w, i) => Math.abs(w.x - b[i].x) < 0.5 && Math.abs(w.y - b[i].y) < 0.5 && Math.abs(w.w - b[i].w) < 0.5);
+  // All renders must share one layout, or the cut-outs land on the wrong words. Every pass reports
+  // its word boxes, so check they agree and render again if not (e.g. a font finished loading).
+  let result: { poster: Blob; layers: Blob[]; words: PosterWordBox[] } | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const plain = await renderVersePosterInternal(bgImg, logoImg, verse, 'collect');
+    const words = plain.words;
+    const layerMembers: number[][] = [];
+    words.forEach((w, i) => {
+      let layer = layerMembers.findIndex((members) => members.every((j) => !overlaps(w, words[j])));
+      if (layer < 0) { layer = layerMembers.length; layerMembers.push([]); }
+      layerMembers[layer].push(i);
+      w.layer = layer;
+    });
+    const layers: Blob[] = [];
+    let consistent = true;
+    for (const members of layerMembers) {
+      const pass = await renderVersePosterInternal(bgImg, logoImg, verse, new Set(members));
+      consistent = consistent && sameLayout(words, pass.words);
+      layers.push(pass.blob);
+    }
+    result = { poster: plain.blob, layers, words };
+    if (consistent) break;
+  }
+  return result!;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex.trim());
+  if (!m) return `rgba(255,215,0,${alpha})`;
+  return `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${alpha})`;
+}
+
+async function renderVersePosterInternal(
+  bgImg: HTMLImageElement | null,
+  logoImg: HTMLImageElement | null,
+  verse: PosterVerseInput,
+  // undefined: plain poster, no measuring. 'collect': plain poster + word boxes. A set: those words glowing.
+  highlight?: 'collect' | Set<number>
+): Promise<{ blob: Blob; words: PosterWordBox[] }> {
   await ensurePosterFontsPreloaded();
   await document.fonts.ready;
 
@@ -1066,7 +1197,14 @@ export async function renderVersePoster(
 
   // Primary language verse first (matches reference images: Tamil verse is the visual anchor at
   // the top of the Scripture block) - steady body weight with one larger accent-colored hero clause
-  curY = paintClauseBlock(ctx, primaryLayout, curY, alignX, theme);
+  // Reading highlighter: the word being read glows in the accent colour (on a light theme the text
+  // stays dark so it remains readable, with the glow around it).
+  const hlPass: WordHighlightPass | undefined = highlight === undefined ? undefined : {
+    boxes: [], glowWords: highlight === 'collect' ? undefined : highlight,
+    glowColor: hexToRgba(accentColorHex, 0.95),
+    textColor: isLight ? theme.baseColor : '#FFFBEA',
+  };
+  curY = paintClauseBlock(ctx, primaryLayout, curY, alignX, theme, 'center', hlPass);
   curY += gap;
 
   // Primary-language reference (Tamil / Telugu / English-as-primary) BELOW its verse, in a
@@ -1138,9 +1276,10 @@ export async function renderVersePoster(
   fillTextLetterSpaced(ctx, ministryText, groupLeft + igSize + igGap + ministryTextWidth / 2, footerY, 4);
   ctx.restore();
 
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Canvas toBlob failed'))), 'image/png');
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Canvas toBlob failed'))), 'image/png');
   });
+  return { blob, words: hlPass?.boxes ?? [] };
 }
 
 // The editorial poster style (left-text column / right-side subject, ~4:5) - a sibling to
@@ -2660,6 +2799,14 @@ function fitFontSize(ctx: CanvasRenderingContext2D, text: string, fontFor: (px: 
   return minPx;
 }
 
+// Where renderMeditationFrame places the poster card, in frame pixels - also used to map the
+// poster's word boxes onto the frame for the reading highlighter.
+export function meditationCardRect(posterW: number, posterH: number): { x: number; y: number; w: number; h: number } {
+  const h = Math.round(MEDITATION_H * 0.86);
+  const w = Math.round(h * (posterW / posterH));
+  return { x: Math.round(MEDITATION_W * 0.93 - w), y: Math.round((MEDITATION_H - h) / 2), w, h };
+}
+
 export async function renderMeditationFrame(
   bgImg: HTMLImageElement | null,
   logoImg: HTMLImageElement | null,
@@ -2702,10 +2849,7 @@ export async function renderMeditationFrame(
   ctx.fillRect(0, 0, width, height);
 
   // Poster card, right side: full poster at 9:16, rounded, with a deep shadow and a hairline border.
-  const cardH = Math.round(height * 0.86);
-  const cardW = Math.round(cardH * (posterImg.width / posterImg.height));
-  const cardX = Math.round(width * 0.93 - cardW);
-  const cardY = Math.round((height - cardH) / 2);
+  const { x: cardX, y: cardY, w: cardW, h: cardH } = meditationCardRect(posterImg.width, posterImg.height);
   const radius = 26;
   ctx.save();
   ctx.shadowColor = 'rgba(0,0,0,0.65)';

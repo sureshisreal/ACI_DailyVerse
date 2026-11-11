@@ -15,6 +15,7 @@ import {
   getImageServiceStatus,
   synthesizeVerseAudio,
   generateNarrationVideo,
+  alignCaptions,
   generateMeditationContent,
   adjustMeditationLength,
   generateYouTubeMetadata,
@@ -25,7 +26,8 @@ import {
   type MeditationText,
   type VersePortion,
 } from '../services/verseApi';
-import { loadImage, base64ToImageDataUrl, renderVersePoster, renderCornerPoster, renderThumbnail, renderMeditationFrame, upscaleToCanonical, blobToBase64 } from './posterRenderer';
+import { loadImage, base64ToImageDataUrl, renderVersePosterHighlightSet, renderCornerPoster, renderThumbnail, renderMeditationFrame, meditationCardRect, upscaleToCanonical, blobToBase64, type PosterWordBox } from './posterRenderer';
+import { buildHighlightWords, transformBoxes, type SpokenWord } from './wordHighlight';
 import { pcm16Base64ToWavBase64, combinePcm16PartsToWavBase64, pcm16Base64DurationSeconds, dataUrlToBlobUrl, blobUrlToBytes, bytesToBase64 } from './wavEncoder';
 
 // The channel's Posts page in YouTube Studio, where posters are posted manually (the YouTube API
@@ -133,6 +135,26 @@ function wordCount(text: string): number {
 
 // The meditation, then a short spoken invitation to close their eyes, then the prayer - all one
 // continuous narration (see PRAYER_INVITATION above for why the invitation itself is fixed text).
+// Reading highlighter payload for /api/video/generate: matches the poster's verse words to when they
+// are spoken (Edge voices report word timings; for the local voices, fall back to Whisper alignment),
+// so each word glows while it is read. Best-effort polish - any failure just means a video without it.
+async function buildVideoHighlight(
+  boxes: PosterWordBox[], layerBlobs: Blob[],
+  audio: { audioBase64: string | null; words?: SpokenWord[] }, verseText: string, lang: 'en' | 'ta' | 'te',
+) {
+  try {
+    let spoken = audio.words;
+    if (!spoken?.length && audio.audioBase64) spoken = (await alignCaptions(audio.audioBase64, verseText, lang)).words;
+    const words = buildHighlightWords(boxes, spoken || []);
+    if (!words) return null;
+    const layerImagesBase64 = await Promise.all(layerBlobs.map(blobToBase64));
+    return { layerImagesBase64, words };
+  } catch (err) {
+    console.warn('Reading highlighter skipped:', err);
+    return null;
+  }
+}
+
 function buildReflectionText(lang: 'en' | 'ta' | 'te', explanation: string, prayer: string): string {
   return `${explanation} ${PRAYER_INVITATION[lang]} ${prayer}`;
 }
@@ -672,11 +694,11 @@ const DailyVerseGenerator: React.FC = () => {
     for (const lang of langs) {
       setVideoStep(lang.key, 'active');
       try {
-        const posterBlob = await renderVersePoster(ctx.bgImg, ctx.logoImg, {
+        const posterSet = await renderVersePosterHighlightSet(ctx.bgImg, ctx.logoImg, {
           primaryText: lang.posterText, primaryRef: lang.reference, primaryLang: lang.primaryLang,
           fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor,
         });
-        const posterBase64 = await blobToBase64(posterBlob);
+        const posterBase64 = await blobToBase64(posterSet.poster);
 
         // No hook card / pre-verse narration here (removed per explicit feedback - this Narration
         // Video should just read the verse itself, nothing spoken or shown before it). The verse
@@ -687,7 +709,9 @@ const DailyVerseGenerator: React.FC = () => {
         if (!audioResp.audioBase64) throw new Error(audioResp.error || 'Narration unavailable.');
         const wavBase64 = pcm16Base64ToWavBase64(audioResp.audioBase64);
 
-        const videoResp = await generateNarrationVideo(posterBase64, wavBase64);
+        // Reading highlighter: a band behind each verse word on the poster while it is spoken.
+        const highlight = await buildVideoHighlight(posterSet.words, posterSet.layers, audioResp, lang.text, lang.primaryLang);
+        const videoResp = await generateNarrationVideo(posterBase64, wavBase64, highlight ? { highlight } : undefined);
         const filenamePrefix = `${slug}-${lang.key}-narration`;
         results[lang.key] = {
           kind: 'short',
@@ -780,16 +804,25 @@ const DailyVerseGenerator: React.FC = () => {
         // A composed landscape frame (blurred clean background + title block + the verse poster as a
         // framed card - see posterRenderer.ts's renderMeditationFrame) rather than the portrait
         // poster letterboxed into the wide video frame.
-        const posterBase64Promise = renderVersePoster(ctx.bgImg, ctx.logoImg, {
-          primaryText: lang.posterText, primaryRef: lang.reference, primaryLang: lang.primaryLang,
-          fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor,
-        })
-          .then((posterBlob) => loadImage(URL.createObjectURL(posterBlob)))
-          .then((posterImg) => renderMeditationFrame(ctx.bgImg, ctx.logoImg, posterImg, {
-            lang: lang.primaryLang, reference: lang.reference,
+        // Rendered once plain and once per reading-highlighter layer (copies with some verse words
+        // glowing), with the poster's word boxes mapped onto the frame's poster card.
+        const meditationFramesPromise = (async () => {
+          const set = await renderVersePosterHighlightSet(ctx.bgImg, ctx.logoImg, {
+            primaryText: lang.posterText, primaryRef: lang.reference, primaryLang: lang.primaryLang,
             fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor,
-          }))
-          .then(blobToBase64);
+          });
+          const urls = [set.poster, ...set.layers].map((b) => URL.createObjectURL(b));
+          try {
+            const imgs = await Promise.all(urls.map(loadImage));
+            const frameOpts = { lang: lang.primaryLang, reference: lang.reference, fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor };
+            const [frame, ...layerFrames] = await Promise.all(imgs.map((img) => renderMeditationFrame(ctx.bgImg, ctx.logoImg, img, frameOpts)));
+            const rect = meditationCardRect(imgs[0].width, imgs[0].height);
+            return { frameBase64: await blobToBase64(frame), layerFrames, boxes: transformBoxes(set.words, imgs[0].width, rect) };
+          } finally {
+            urls.forEach((u) => URL.revokeObjectURL(u));
+          }
+        })();
+        const posterBase64Promise = meditationFramesPromise.then((f) => f.frameBase64);
         const youtubePromise = buildYouTubePackage(ctx, lang, filenamePrefix, verse.reference);
         // Settled on its own so an early throw below (e.g. reflection audio failing) never leaves
         // these as unhandled rejections.
@@ -852,7 +885,11 @@ const DailyVerseGenerator: React.FC = () => {
         // (still rendered at posterRenderer.ts's standard 1080x1920 - not rewritten for landscape)
         // inside the wider frame with a blurred pillarbox rather than cropping it, which a plain
         // 'cover' fit would do almost entirely to a portrait source in a landscape target.
+        // The narration opens with the verse reading, so its word timings apply as-is.
+        const frames = await meditationFramesPromise;
+        const highlight = await buildVideoHighlight(frames.boxes, frames.layerFrames, verseAudioResp, lang.text, lang.primaryLang);
         const videoResp = await generateNarrationVideo(posterBase64, wavBase64, {
+          ...(highlight ? { highlight } : {}),
           width: MEDITATION_VIDEO_WIDTH, height: MEDITATION_VIDEO_HEIGHT, fitMode: 'cover', // frame is already 1920x1080
         });
         results[lang.key] = {

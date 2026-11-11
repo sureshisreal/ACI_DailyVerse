@@ -139,6 +139,9 @@ export interface VerseAudioResult {
   audioBase64: string | null;
   provider?: string;
   error?: string;
+  // When each word is spoken (seconds from the start of the audio) - provided by the Edge voices;
+  // drives the video's reading highlighter. Absent for the local engines (see alignCaptions).
+  words?: { text: string; start: number; end: number }[];
 }
 
 // Local, offline narration (Piper for English/Telugu, MMS-TTS/Indic Parler-TTS for Tamil) - reads
@@ -178,6 +181,11 @@ export function generateNarrationVideo(
     // landscape canvas around posterRenderer.ts's always-portrait 1080x1920 poster). See
     // server.ts's /api/video/generate handler for the actual filter chain.
     fitMode?: 'cover' | 'contain-blur';
+    // Reading highlighter - see components/wordHighlight.ts and server.ts's parseHighlight.
+    highlight?: {
+      layerImagesBase64: string[];
+      words: { x: number; y: number; w: number; h: number; layer: number; start: number; end: number }[];
+    };
   }
 ): Promise<VideoGenerateResult> {
   return postJson<VideoGenerateResult>('/api/video/generate', {
@@ -189,7 +197,14 @@ export function generateNarrationVideo(
     introImageBase64: opts?.introImageBase64,
     introDurationSec: opts?.introDurationSec,
     fitMode: opts?.fitMode ?? 'cover',
+    highlight: opts?.highlight,
   });
+}
+
+// Word timings for narration audio from an engine that doesn't report them (the local Piper /
+// Indic-Parler voices) - Whisper alignment against the given text, server-side.
+export function alignCaptions(audioBase64: string, text: string, lang: 'en' | 'ta' | 'te'): Promise<{ words: { text: string; start: number; end: number }[] }> {
+  return postJson('/api/align-captions', { audioBase64, text, lang });
 }
 
 export interface MeditationText {
