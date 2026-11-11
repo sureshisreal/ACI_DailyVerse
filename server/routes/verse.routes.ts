@@ -302,7 +302,10 @@ verseRouter.post('/verse/analyze', async (req, res) => {
     // Pollinations doesn't guarantee it honors exact dimensions anyway. The client canvas-upscales
     // the result to exactly 1080x1920 before compositing posters and saving output, so poster
     // quality/size is unaffected.
-    const background = await generateReviewedBackground(analysis.prompt, analysis.negativePrompt, cacheKey, analysis.theme, analysis.visualConcept, analysis.themeKey, forceRegenerate);
+    // A brand new background on every generation by default (new seed, same verse concept), not the
+    // one cached from an earlier run of this verse. REUSE_BACKGROUNDS=on restores reuse.
+    const freshBackground = forceRegenerate || (process.env.REUSE_BACKGROUNDS || '').toLowerCase() !== 'on';
+    const background = await generateReviewedBackground(analysis.prompt, analysis.negativePrompt, cacheKey, analysis.theme, analysis.visualConcept, analysis.themeKey, freshBackground);
     return res.json({
       analysis,
       backgroundImageBase64: background.imageBase64,

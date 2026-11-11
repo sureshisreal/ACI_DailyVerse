@@ -75,6 +75,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 # EDGE_TTS_VOICE_TA=ta-IN-PallaviNeural  EDGE_TTS_VOICE_TE=te-IN-ShrutiNeural  EDGE_TTS_VOICE_EN=en-GB-SoniaNeural
 # EDGE_TTS_RATE=-10%
 
+# REUSE_BACKGROUNDS=on            # reuse a verse's cached background; default: a new background every generation
+
 # Background music under every video - see assets/music/README.md:
 # BACKGROUND_MUSIC=on            # on (default) | off
 # BACKGROUND_MUSIC_LUFS=-34      # background loudness (narration is about -20)
