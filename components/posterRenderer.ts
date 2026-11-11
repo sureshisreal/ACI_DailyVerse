@@ -522,15 +522,31 @@ const HERO_LEADING_FUNCTION_WORDS = new Set([
   'to', 'unto', 'with', 'by', 'as', 'at', 'if', 'when', 'let', 'is', 'be',
 ]);
 
+// Letters in a word, ignoring punctuation (Tamil/Telugu vowel signs count - they roughly track syllables).
+const heroLetters = (w: string) => Array.from(w.replace(/[\p{P}\p{S}]/gu, '')).length;
+// An emphasised opening shorter than this looks like a stray glyph rather than a phrase (Mark 10:16 in
+// Telugu enlarged just "ఆ" - "the"), so the next word is pulled in until it reaches this.
+const HERO_MIN_LETTERS = 5;
+
 function splitFirstWordHero(text: string): string[] {
   const trimmed = text.trim();
   const words = trimmed.split(/\s+/);
   if (words.length < 2) return [trimmed];
   let heroCount = 1;
+  const heroLen = () => words.slice(0, heroCount).reduce((n, w) => n + heroLetters(w), 0);
   while (
-    heroCount < 3 && heroCount < words.length - 1 &&
-    HERO_LEADING_FUNCTION_WORDS.has(words[heroCount - 1].toLowerCase().replace(/[^a-z]/g, ''))
+    heroCount < 3 && heroCount < words.length - 1 && (
+      HERO_LEADING_FUNCTION_WORDS.has(words[heroCount - 1].toLowerCase().replace(/[^a-z]/g, ''))
+      || heroLen() < HERO_MIN_LETTERS
+    )
   ) heroCount++;
+  // English: if even the extended opening carries no substantial word ("And he took"), emphasising it
+  // looks accidental - set the verse as one uniform block instead.
+  const isLatin = /^[\x00-\x7F\u2018-\u201D]*$/.test(trimmed);
+  if (isLatin) {
+    const content = words.slice(0, heroCount).filter((w) => !HERO_LEADING_FUNCTION_WORDS.has(w.toLowerCase().replace(/[^a-z]/g, '')));
+    if (!content.some((w) => heroLetters(w) >= HERO_MIN_LETTERS)) return [trimmed];
+  }
   return [words.slice(0, heroCount).join(' '), words.slice(heroCount).join(' ')];
 }
 
@@ -659,7 +675,9 @@ function hslToHex(h: number, s: number, l: number): string {
 function accentForTheme(accentHex: string, isLight: boolean): string {
   const { h, s } = hexToHsl(accentHex);
   const sat = Math.max(0.45, Math.min(0.9, s || 0.7)); // saturation floor raised 0.35 -> 0.45 for brand-pop consistency
-  return hslToHex(h, sat, isLight ? 0.32 : 0.68);
+  // On a light background the accent must be dark enough to hold its own against bright texture, and
+  // rich rather than muddy (a desaturated dark gold read as olive) - so deeper and more saturated there.
+  return isLight ? hslToHex(h, Math.max(0.62, sat), 0.29) : hslToHex(h, sat, 0.68);
 }
 
 // Resolved once per poster from the actual brightness of the band the text landed in (dark-on-light
@@ -1058,7 +1076,7 @@ async function renderVersePosterInternal(
 
   for (let attempt = 0; attempt < 40; attempt++) {
     const primaryBaseSize = 42 * scale;
-    const heroScale = 2.15;
+    const heroScale = 1.85;
     const primaryRefSize = 36 * scale;
     const englishBaseSize = 40 * scale;
     const englishHeroScale = 1.55;
@@ -1077,7 +1095,11 @@ async function renderVersePosterInternal(
       enableHero: true,
     });
 
-    primaryRefFont = `700 ${primaryRefSize}px "Great Vibes", "Dancing Script", Montserrat`;
+    // The citation in the verse's own typeface and script, accent-coloured - not "Great Vibes", which
+    // has no Tamil/Telugu glyphs (the book name fell back to another font beside ornate Latin digits).
+    primaryRefFont = primaryIsEnglish
+      ? `${englishStyle}${preset.englishWeight} ${primaryRefSize * 0.8}px ${englishFontFamily}`
+      : `700 ${primaryRefSize * 0.78}px ${primaryFontFamily}`;
     primaryRefLH = primaryRefSize * 1.4;
     primaryRefLines = wrapText(ctx, verse.primaryRef, primaryRefFont, MAX_W - 60);
 
@@ -1097,7 +1119,7 @@ async function renderVersePosterInternal(
         enableHero: true,
       });
 
-      englishRefFont = `400 ${englishRefSize}px "Great Vibes", "Dancing Script", Montserrat`;
+      englishRefFont = `${englishStyle}${preset.englishWeight} ${englishRefSize * 0.8}px ${englishFontFamily}`;
       englishRefLH = englishRefSize * 1.5;
       englishRefLines = wrapText(ctx, verse.englishRef!, englishRefFont, MAX_W - 60);
 
@@ -1698,7 +1720,7 @@ export async function renderCornerPoster(
     return w;
   };
   const buildPrimaryBlock = (s: number, maxW: number): LangBlock => {
-    const baseSize = 38 * s, heroScale = 2.0, refSize = 32 * s;
+    const baseSize = 38 * s, heroScale = 1.8, refSize = 32 * s;
     const layout = buildClauseBlock(ctx, verse.primaryText, {
       baseFont: `${primaryStylePrefix}${primaryBaseWeight} ${baseSize}px ${primaryFontFamily}`,
       heroFont: `${primaryStylePrefix}${primaryHeroWeight} ${baseSize * heroScale}px ${primaryFontFamily}`,
@@ -1710,7 +1732,10 @@ export async function renderCornerPoster(
       enableHero: heroEnabled,
       heroMode: 'firstWord',
     });
-    const refFont = `700 ${refSize}px "Great Vibes", "Dancing Script", Montserrat`;
+    // Citation in the verse's own typeface (see renderVersePoster for why not the script face).
+    const refFont = primaryIsEnglish
+      ? `${englishStyle}${preset.englishWeight} ${refSize * 0.8}px ${englishFontFamily}`
+      : `700 ${refSize * 0.78}px ${primaryFontFamily}`;
     const refLH = refSize * 1.4;
     const refLines = wrapText(ctx, verse.primaryRef, refFont, maxW - 20);
     const refGap = 28 * s;
@@ -1734,7 +1759,7 @@ export async function renderCornerPoster(
       enableHero: heroEnabled,
       heroMode: 'firstWord',
     });
-    const refFont = `400 ${refSize}px "Great Vibes", "Dancing Script", Montserrat`;
+    const refFont = `${englishStyle}${preset.englishWeight} ${refSize * 0.8}px ${englishFontFamily}`;
     const refLH = refSize * 1.5;
     const refLines = wrapText(ctx, verse.englishRef!, refFont, maxW - 20);
     const refGap = 28 * s * 0.6;
@@ -2001,11 +2026,25 @@ export async function renderCornerPoster(
     ctx.fillStyle = scrimGrad;
     ctx.fillRect(0, scrimTop - feather, width, (scrimBottom + feather) - (scrimTop - feather));
   };
+  // Dark text on a bright photo gets the same treatment in reverse: a soft light haze across the
+  // text band, so it reads cleanly over fabric/foliage texture instead of sitting straight on it.
+  const paintLightScrim = (top: number, bottom: number) => {
+    const scrimTop = top - 40, scrimBottom = bottom + 40, feather = 70;
+    const scrimGrad = ctx.createLinearGradient(0, scrimTop - feather, 0, scrimBottom + feather);
+    scrimGrad.addColorStop(0, 'rgba(252,249,243,0)');
+    scrimGrad.addColorStop(0.2, 'rgba(252,249,243,0.32)');
+    scrimGrad.addColorStop(0.5, 'rgba(252,249,243,0.42)');
+    scrimGrad.addColorStop(0.8, 'rgba(252,249,243,0.32)');
+    scrimGrad.addColorStop(1, 'rgba(252,249,243,0)');
+    ctx.fillStyle = scrimGrad;
+    ctx.fillRect(0, scrimTop - feather, width, (scrimBottom + feather) - (scrimTop - feather));
+  };
+  const paintScrim = (light: boolean, top: number, bottom: number) => (light ? paintLightScrim : paintDarkScrim)(top, bottom);
   if (arrangement === 'stacked') {
     const last = placed[placed.length - 1];
-    if (!placed[0].theme.isLight) paintDarkScrim(placed[0].top, last.top + last.block.height);
+    paintScrim(placed[0].theme.isLight, placed[0].top, last.top + last.block.height);
   } else {
-    for (const pl of placed) if (!pl.theme.isLight) paintDarkScrim(pl.top, pl.top + pl.block.height);
+    for (const pl of placed) paintScrim(pl.theme.isLight, pl.top, pl.top + pl.block.height);
   }
 
   // Per-block legibility check (see regionStats): each block measures the background directly
@@ -2064,23 +2103,27 @@ export async function renderCornerPoster(
     paintBlock(en, false);
   }
 
-  // Footer colour from the strip it actually sits on - in the split arrangement the blocks can have
-  // different themes, and neither necessarily matches the bottom edge of the frame.
-  const footerTop = height - FOOTER_H - 6;
-  const theme = detailGrid
-    ? pickTheme(regionStats(detailGrid, width, height, width * 0.25, footerTop, width * 0.75, height).lum, accentColorHex)
-    : placed[0].theme;
-  const isLight = theme.isLight;
-
-  const footerY = height - FOOTER_H / 2 - 6;
+  // Branded footer: one consistent treatment on every poster - a dark strip fading up from the bottom
+  // edge with the ministry name in white beside the Instagram mark, matching the video frames. (The
+  // colour used to follow whatever was behind it, and light-grey text on a bright photo vanished.)
+  const footerGrad = ctx.createLinearGradient(0, height - FOOTER_H - 50, 0, height);
+  footerGrad.addColorStop(0, 'rgba(8,7,6,0)');
+  footerGrad.addColorStop(0.45, 'rgba(8,7,6,0.62)');
+  footerGrad.addColorStop(1, 'rgba(8,7,6,0.9)');
+  ctx.fillStyle = footerGrad;
+  ctx.fillRect(0, height - FOOTER_H - 50, width, FOOTER_H + 50);
+  const footerY = height - FOOTER_H / 2 - 4;
   ctx.save();
-  ctx.font = '700 18px Lato, Montserrat';
-  ctx.textAlign = 'center';
+  ctx.font = '700 20px Lato, Montserrat';
+  const igSize = 30, igGap = 12;
+  const nameW = ctx.measureText(MINISTRY_NAME).width + 3 * (MINISTRY_NAME.length - 1);
+  const groupLeft = width / 2 - (igSize + igGap + nameW) / 2;
+  drawInstagramIcon(ctx, groupLeft + igSize / 2, footerY, igSize);
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = isLight ? 'rgba(36,26,16,0.68)' : 'rgba(255,255,255,0.82)';
-  ctx.shadowColor = theme.shadowColor;
-  ctx.shadowBlur = 8;
-  fillTextLetterSpaced(ctx, MINISTRY_NAME, width / 2, footerY, 3);
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.shadowColor = 'rgba(0,0,0,0.9)';
+  ctx.shadowBlur = 10;
+  fillTextLetterSpaced(ctx, MINISTRY_NAME, groupLeft + igSize + igGap + nameW / 2, footerY, 3);
   ctx.restore();
 
   return new Promise((resolve, reject) => {
