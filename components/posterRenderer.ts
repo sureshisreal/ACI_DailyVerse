@@ -881,6 +881,13 @@ interface PosterTheme {
   shadowColor: string;
   shadowBlur: number;
   accentColor: string; // for the reference lines, divider and footer
+  // Key words: a two-colour gradient (left -> right across the line) in harmonised shades of the
+  // accent, with a thin outline in a deep shade of it for definition.
+  heroGradient: [string, string];
+  heroStroke?: string;
+  // Thin dark outline on body text - only behind a busy part of the photo, where it separates the
+  // letters from the texture; calm areas stay clean.
+  bodyStroke?: string;
 }
 
 // busy: the text band's busyness (regionStats). Light text on a darkened photo by default; dark text
@@ -889,12 +896,27 @@ interface PosterTheme {
 // text with a stronger scrim: dark text on busy brightness read as a draft.
 const CLEAN_LIGHT_MIN_LUM = 172;
 const CLEAN_LIGHT_MAX_BUSY = 6;
+// Busyness above which white body text gets a thin dark outline (same scale as regionStats).
+const BODY_OUTLINE_MIN_BUSY = 10;
 function pickTheme(bandLuminance: number, accentHex: string, busy?: number): PosterTheme {
   const isLight = busy !== undefined && bandLuminance >= CLEAN_LIGHT_MIN_LUM && busy <= CLEAN_LIGHT_MAX_BUSY;
   const accent = accentForTheme(accentHex, isLight);
-  return isLight
-    ? { isLight: true, baseColor: '#1f1b17', heroColor: accent, shadowColor: 'rgba(255,250,240,0.6)', shadowBlur: 10, accentColor: accent }
-    : { isLight: false, baseColor: PRO_TEXT, heroColor: accent, shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 18, accentColor: accent };
+  const { h, s } = hexToHsl(accentHex);
+  const sat = Math.max(0.55, Math.min(0.9, (s || 0.6) + 0.15));
+  // Gradient ends ~12-15 degrees either side of the accent hue: related, but enough to glow.
+  const hueA = (h - 0.035 + 1) % 1, hueB = (h + 0.04) % 1;
+  if (isLight) {
+    return {
+      isLight: true, baseColor: '#1f1b17', heroColor: accent, shadowColor: 'rgba(255,250,240,0.6)', shadowBlur: 10, accentColor: accent,
+      heroGradient: [hslToHex(hueA, sat, 0.36), hslToHex(hueB, sat, 0.28)],
+    };
+  }
+  return {
+    isLight: false, baseColor: PRO_TEXT, heroColor: accent, shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 18, accentColor: accent,
+    heroGradient: [hslToHex(hueA, sat, 0.74), hslToHex(hueB, Math.min(0.95, sat + 0.05), 0.62)],
+    heroStroke: hslToHex(h, Math.min(0.7, sat), 0.16),
+    bodyStroke: busy !== undefined && busy > BODY_OUTLINE_MIN_BUSY ? 'rgba(18,12,8,0.75)' : undefined,
+  };
 }
 
 // Draws a clause block's text lines - the hero clause in the theme's accent color and italic
@@ -975,14 +997,34 @@ function paintClauseBlock(ctx: CanvasRenderingContext2D, layout: ClauseBlockLayo
     }
     ctx.save();
     ctx.font = line.font;
-    ctx.fillStyle = line.isHero ? theme.heroColor : theme.baseColor;
+    const px = Number(/(\d+(?:\.\d+)?)px/.exec(line.font)?.[1] || 40);
+    let fill: string | CanvasGradient = line.isHero ? theme.heroColor : theme.baseColor;
+    if (line.isHero) {
+      // Two-colour gradient across the key line's own width (see PosterTheme.heroGradient).
+      const w = ctx.measureText(line.text).width;
+      const x0 = align === 'center' ? alignX - w / 2 : align === 'right' || align === 'end' ? alignX - w : alignX;
+      const grad = ctx.createLinearGradient(x0, y - px * 0.3, x0 + w, y + px * 0.3);
+      grad.addColorStop(0, theme.heroGradient[0]);
+      grad.addColorStop(1, theme.heroGradient[1]);
+      fill = grad;
+    }
+    const stroke = line.isHero ? theme.heroStroke : theme.bodyStroke;
     ctx.shadowColor = theme.shadowColor;
     // The hero ("keyword") clause gets a noticeably heavier glow on top of its larger size/weight/
-    // accent color. Not a background box/highlight behind the text - that was deliberately ruled out
-    // (see splitIntoClauses above) in favor of matching the reference posters' plain-background,
-    // glow-only emphasis treatment.
+    // accent colour. Not a background box/highlight behind the text - that was deliberately ruled out
+    // (see splitIntoClauses above) in favour of glow-only emphasis.
     ctx.shadowBlur = line.isHero ? theme.shadowBlur * 2.2 : theme.shadowBlur;
     ctx.shadowOffsetY = line.isHero ? (theme.isLight ? 1 : 5) : (theme.isLight ? 0 : 3);
+    if (stroke) {
+      // Outline first (carrying the shadow), then the fill on top without a second shadow.
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+      ctx.lineWidth = Math.max(1.5, px * (line.isHero ? 0.075 : 0.06));
+      ctx.strokeStyle = stroke;
+      ctx.strokeText(line.text, alignX, y);
+      ctx.shadowColor = 'transparent';
+    }
+    ctx.fillStyle = fill;
     ctx.fillText(line.text, alignX, y);
     ctx.restore();
     if (hl) paintGlowingWords(ctx, hl, firstWord);
