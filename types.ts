@@ -44,9 +44,9 @@ export interface VerseAnalysis {
 // Tamil+English and Telugu+English posters. Every font is limited to families index.html actually
 // loads, so a design can never request a face that would silently fall back to a system font.
 export type PosterEnglishFont = 'playfair' | 'cormorant' | 'lora' | 'cinzel' | 'montserrat' | 'lato'
-  | 'eb-garamond' | 'libre-baskerville' | 'dm-serif-display' | 'crimson-pro';
+  | 'eb-garamond' | 'libre-baskerville' | 'dm-serif-display' | 'crimson-pro' | 'oswald';
 export type PosterTamilFont = 'noto-serif-tamil' | 'noto-sans-tamil' | 'arima-madurai'
-  | 'tiro-tamil' | 'mukta-malar' | 'hind-madurai' | 'catamaran';
+  | 'tiro-tamil' | 'mukta-malar' | 'hind-madurai' | 'catamaran' | 'anek-tamil';
 export type PosterTeluguFont = 'noto-serif-telugu' | 'noto-sans-telugu'
   | 'tiro-telugu' | 'hind-guntur' | 'anek-telugu' | 'ramabhadra';
 // Where a block sits vertically in the 4:5 frame.
@@ -68,7 +68,10 @@ export interface PosterDesign {
   primary: PosterBlockDesign;
   english: PosterBlockDesign;
   // The professional type style this design uses - the fonts below are always set from it, never mixed.
-  typeStyle?: 'classic' | 'elegant';
+  typeStyle?: 'classic' | 'elegant' | 'impact';
+  // The words that carry the verse's message, per language - an exact phrase from that language's
+  // verse text. Emphasised (own line, larger, accent colour) instead of just the opening words.
+  emphasis?: { ta?: string; te?: string; en?: string };
   tamilFont: PosterTamilFont;
   teluguFont: PosterTeluguFont;
   englishFont: PosterEnglishFont;

@@ -143,6 +143,10 @@ const FONT_PRELOAD_SPECS = [
   '400 32px "DM Serif Display"',
   '500 32px "Crimson Pro"', '700 32px "Crimson Pro"',
   '500 32px "Noto Sans Tamil"', '500 32px "Noto Sans Telugu"', '700 32px Montserrat',
+  // Impact style (condensed via the width axis).
+  '800 condensed 32px "Anek Tamil"', '500 semi-condensed 32px "Anek Tamil"',
+  '800 condensed 32px "Anek Telugu"', '500 semi-condensed 32px "Anek Telugu"',
+  '400 32px Oswald', '700 32px Oswald',
 ];
 
 // --- Professional type system ---
@@ -162,6 +166,7 @@ function proEnglishWeights(family: string): { body: number; hero: number } {
   if (family.includes('Baskerville')) return { body: 400, hero: 700 };
   if (family.includes('DM Serif')) return { body: 400, hero: 400 }; // single-weight display serif
   if (family.includes('Crimson')) return { body: 500, hero: 700 };
+  if (family.includes('Oswald')) return { body: 400, hero: 700 };
   if (family.includes('Cormorant')) return { body: 700, hero: 700 }; // 400 is too thin at poster sizes
   if (family.includes('Cinzel')) return { body: 400, hero: 700 };
   if (family.includes('Montserrat')) return { body: 500, hero: 700 };
@@ -176,7 +181,11 @@ function proPrimaryFonts(lang: 'ta' | 'te' | 'en', englishFamily: string, design
   }
   const preset = FONT_STYLE_PRESETS[fontStyle] || FONT_STYLE_PRESETS[DEFAULT_FONT_STYLE];
   const face = lang === 'ta' ? TAMIL_FACES[design?.tamilFont ?? preset.tamilFace] : TELUGU_FACES[design?.teluguFont ?? preset.teluguFace];
-  return { hero: face.family, heroWeight: face.hero, body: face.body.family, bodyWeight: face.body.weight };
+  // A width keyword rides along with the weight ("800 condensed") - valid in the canvas font shorthand.
+  return {
+    hero: face.family, heroWeight: `${face.hero}${face.heroStretch ? ` ${face.heroStretch}` : ''}`,
+    body: face.body.family, bodyWeight: `${face.body.weight}${face.body.stretch ? ` ${face.body.stretch}` : ''}`,
+  };
 }
 // Reference ("MARK 10:16") font: tracked capitals for English; the clean sans for Tamil/Telugu.
 function proReferenceFont(lang: 'ta' | 'te' | 'en', px: number): string {
@@ -652,6 +661,15 @@ interface ClauseBlockStyle {
   // clause (see pickHeroIndex). 'firstWord': the editorial layout's rule, hero = just the verse's
   // opening word (see splitFirstWordHero).
   heroMode?: 'shortest' | 'firstWord';
+  // The AI-chosen words that carry the verse's message (design.emphasis). When found in the text they
+  // become the hero on their own line, wherever they sit in the verse; heroMode is the fallback.
+  keyPhrase?: string;
+  // Impact style: the key phrase is enlarged until it fills the line width (up to fillMax x the hero
+  // size), for a stacked typographic block.
+  fillKey?: boolean;
+  fillMax?: number;
+  // Set the whole block in capitals (condensed English display face).
+  uppercase?: boolean;
 }
 
 interface ClauseBlockLayout {
@@ -664,11 +682,32 @@ interface ClauseBlockLayout {
 // single hero clause (see pickHeroIndex) rendered larger. Color is deliberately NOT decided here -
 // it depends on the theme (light/dark background) picked only after placement is known - so this
 // just marks each line `isHero` and the painter resolves color from that at draw time.
+// Splits text around its key phrase: [before?, key, after?] with the key's index, or null when the
+// phrase isn't in this text (e.g. the poster shows a shortened portion without it).
+function splitAroundKeyPhrase(text: string, phrase: string | undefined): { clauses: string[]; heroIdx: number } | null {
+  if (!phrase) return null;
+  const norm = (s: string) => s.replace(/\s+/g, ' ');
+  const t = norm(text), p = norm(phrase).trim();
+  let i = t.indexOf(p);
+  if (i < 0) i = t.toLowerCase().indexOf(p.toLowerCase());
+  if (i < 0 || !p) return null;
+  let end = i + p.length;
+  while (end < t.length && /[\p{P}]/u.test(t[end])) end++; // keep trailing punctuation with the key
+  const before = t.slice(0, i).trim(), key = t.slice(i, end).trim(), after = t.slice(end).trim();
+  if (!before && !after) return null; // the whole text - nothing to contrast with
+  const clauses = [before, key, after].filter(Boolean);
+  return { clauses, heroIdx: clauses.indexOf(key) };
+}
+
+const withFontSize = (font: string, px: number) => font.replace(/(\d+(?:\.\d+)?)px/, `${px}px`);
+
 function buildClauseBlock(ctx: CanvasRenderingContext2D, text: string, style: ClauseBlockStyle): ClauseBlockLayout {
-  const cleanedText = stripCurlyQuotes(text || '');
+  const cased = (s: string) => (style.uppercase ? s.toUpperCase() : s);
+  const cleanedText = cased(stripCurlyQuotes(text || ''));
   const useFirstWordHero = style.heroMode === 'firstWord';
-  const clauses = useFirstWordHero ? splitFirstWordHero(cleanedText) : splitIntoClauses(cleanedText);
-  const heroIdx = !style.enableHero ? -1 : useFirstWordHero ? (clauses.length >= 2 ? 0 : -1) : pickHeroIndex(clauses);
+  const keyed = style.enableHero ? splitAroundKeyPhrase(cleanedText, style.keyPhrase ? cased(style.keyPhrase) : undefined) : null;
+  const clauses = keyed ? keyed.clauses : useFirstWordHero ? splitFirstWordHero(cleanedText) : splitIntoClauses(cleanedText);
+  const heroIdx = keyed ? keyed.heroIdx : !style.enableHero ? -1 : useFirstWordHero ? (clauses.length >= 2 ? 0 : -1) : pickHeroIndex(clauses);
   const lines: PaintLine[] = [];
   let offset = 0;
   let overflowsWidth = false;
@@ -680,9 +719,26 @@ function buildClauseBlock(ctx: CanvasRenderingContext2D, text: string, style: Cl
       if (idx === 0) clause = `“${clause}`;
       if (idx === clauses.length - 1) clause = `${clause}”`;
     }
-    const font = isHero ? style.heroFont : style.baseFont;
-    const lh = isHero ? style.heroLH : style.baseLH;
-    const wrapped = wrapText(ctx, clause, font, style.maxWidth);
+    let font = isHero ? style.heroFont : style.baseFont;
+    let lh = isHero ? style.heroLH : style.baseLH;
+    if (isHero && keyed && style.fillKey) {
+      // Impact: grow the key phrase until it fills the width (it stays on one line), capped.
+      const basePx = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] || 60);
+      ctx.font = font;
+      const w = ctx.measureText(clause).width;
+      if (w > 0 && w < style.maxWidth) {
+        const px = Math.min(basePx * (style.fillMax ?? 1.6), basePx * ((style.maxWidth * 0.98) / w));
+        lh *= px / basePx;
+        font = withFontSize(font, px);
+      }
+    }
+    let wrapped = wrapText(ctx, clause, font, style.maxWidth);
+    // No lone word on a clause's last line ("them," by itself): re-wrap narrower until the last line
+    // has company, keeping the same number of lines.
+    for (let narrow = 0.92; narrow >= 0.7 && wrapped.length >= 2 && !/\s/.test(wrapped[wrapped.length - 1].trim()); narrow -= 0.06) {
+      const retry = wrapText(ctx, clause, font, style.maxWidth * narrow);
+      if (retry.length === wrapped.length) { wrapped = retry; break; }
+    }
 
     ctx.font = font;
     wrapped.forEach((l) => {
@@ -827,14 +883,17 @@ interface PosterTheme {
   accentColor: string; // for the reference lines, divider and footer
 }
 
-function pickTheme(bandLuminance: number, accentHex: string): PosterTheme {
-  // Always warm-white text on a graded photo (see the professional type system above): dark text on a
-  // bright photo read as a draft. Bright text bands get a stronger scrim instead (see callers).
-  void bandLuminance;
-  const isLight = false;
+// busy: the text band's busyness (regionStats). Light text on a darkened photo by default; dark text
+// only on a clean, bright background - a plain sky, parchment, mist - where it reads crisply with no
+// darkening (as in professional devotional posters). Busy bright areas (fabric, foliage) keep light
+// text with a stronger scrim: dark text on busy brightness read as a draft.
+const CLEAN_LIGHT_MIN_LUM = 172;
+const CLEAN_LIGHT_MAX_BUSY = 6;
+function pickTheme(bandLuminance: number, accentHex: string, busy?: number): PosterTheme {
+  const isLight = busy !== undefined && bandLuminance >= CLEAN_LIGHT_MIN_LUM && busy <= CLEAN_LIGHT_MAX_BUSY;
   const accent = accentForTheme(accentHex, isLight);
   return isLight
-    ? { isLight: true, baseColor: '#241a10', heroColor: accent, shadowColor: 'rgba(255,250,240,0.85)', shadowBlur: 16, accentColor: accent }
+    ? { isLight: true, baseColor: '#1f1b17', heroColor: accent, shadowColor: 'rgba(255,250,240,0.6)', shadowBlur: 10, accentColor: accent }
     : { isLight: false, baseColor: PRO_TEXT, heroColor: accent, shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 18, accentColor: accent };
 }
 
@@ -1218,7 +1277,13 @@ async function renderVersePosterInternal(
     dividerGap = 56 * scale;
 
     const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design, fontStyle);
+    const impact = design?.typeStyle === 'impact';
+    const capsEnglish = englishFontFamily.includes('Oswald');
     primaryLayout = buildClauseBlock(ctx, verse.primaryText, {
+      keyPhrase: design?.emphasis?.[verse.primaryLang],
+      fillKey: impact,
+      fillMax: 1.6,
+      uppercase: verse.primaryLang === 'en' && capsEnglish,
       baseFont: `${pro.bodyWeight} ${primaryBaseSize}px ${pro.body}`,
       heroFont: `${pro.heroWeight} ${primaryBaseSize * heroScale}px ${pro.hero}`,
       baseLH: primaryBaseSize * 1.42,
@@ -1240,6 +1305,10 @@ async function renderVersePosterInternal(
     if (hasSecondaryEnglish) {
       const enW = proEnglishWeights(englishFontFamily);
       englishLayout = buildClauseBlock(ctx, verse.englishText!, {
+        keyPhrase: design?.emphasis?.en,
+        fillKey: impact,
+        fillMax: 1.5,
+        uppercase: capsEnglish,
         baseFont: `${enW.body} ${englishBaseSize}px ${englishFontFamily}`,
         heroFont: `${enW.hero} ${englishBaseSize * englishHeroScale}px ${englishFontFamily}`,
         baseLH: englishBaseSize * 1.45,
@@ -1304,7 +1373,9 @@ async function renderVersePosterInternal(
   // photo being darkened to force white text to work, matching the reference posters' bright,
   // minimally-obscured backgrounds; a dark/busy band still gets the safer white-on-black treatment.
   const bandLuminance = detailGrid ? averageLuminanceInBand(detailGrid, bestStartRow, bandRows) : 90;
-  const theme = pickTheme(bandLuminance, accentColorHex);
+  // Busyness of the actual text area - a clean, bright area gets dark text (see pickTheme).
+  const bandBusy = detailGrid ? regionStats(detailGrid, width, height, alignX - MAX_W / 2, curY, alignX + MAX_W / 2, curY + totalH).peakBusy : undefined;
+  const theme = pickTheme(bandLuminance, accentColorHex, bandBusy);
   const isLight = theme.isLight;
 
   // Vignette for edge polish - lighter touch on a light theme so the bright background stays visible.
@@ -1738,10 +1809,12 @@ const DESIGN_ENGLISH_FONTS: Record<PosterEnglishFont, { family: string; body: nu
   'libre-baskerville': { family: '"Libre Baskerville"', body: 400, bodyItalic: 400, hero: 700 },
   'dm-serif-display': { family: '"DM Serif Display"', body: 400, bodyItalic: 400, hero: 400 },
   'crimson-pro': { family: '"Crimson Pro"', body: 500, bodyItalic: 500, hero: 700 },
+  oswald: { family: 'Oswald', body: 400, bodyItalic: 400, hero: 700 },
 };
 // Tamil/Telugu faces: the family for emphasised words, its weight (single-weight display faces such as
 // Tiro and Ramabhadra stay at 400 - a synthetic bold would smear them), and the body face it pairs with.
-interface IndicFace { family: string; hero: number; body: { family: string; weight: number } }
+// stretch: a CSS font-stretch keyword for faces with a width axis (Anek) - condensed for impact.
+interface IndicFace { family: string; hero: number; heroStretch?: string; body: { family: string; weight: number; stretch?: string } }
 const NOTO_SANS_TA = { family: '"Noto Sans Tamil", sans-serif', weight: 500 };
 const MUKTA_MALAR = { family: '"Mukta Malar", "Noto Sans Tamil", sans-serif', weight: 500 };
 const NOTO_SANS_TE = { family: '"Noto Sans Telugu", sans-serif', weight: 500 };
@@ -1754,13 +1827,14 @@ const TAMIL_FACES: Record<PosterTamilFont, IndicFace> = {
   'mukta-malar': { family: '"Mukta Malar", "Noto Sans Tamil", sans-serif', hero: 700, body: MUKTA_MALAR },
   'hind-madurai': { family: '"Hind Madurai", "Noto Sans Tamil", sans-serif', hero: 700, body: { family: '"Hind Madurai", "Noto Sans Tamil", sans-serif', weight: 500 } },
   catamaran: { family: 'Catamaran, "Noto Sans Tamil", sans-serif', hero: 800, body: { family: 'Catamaran, "Noto Sans Tamil", sans-serif', weight: 500 } },
+  'anek-tamil': { family: '"Anek Tamil", "Noto Sans Tamil", sans-serif', hero: 800, heroStretch: 'condensed', body: { family: '"Anek Tamil", "Noto Sans Tamil", sans-serif', weight: 500, stretch: 'semi-condensed' } },
 };
 const TELUGU_FACES: Record<PosterTeluguFont, IndicFace> = {
   'noto-serif-telugu': { family: '"Noto Serif Telugu", serif', hero: 700, body: NOTO_SANS_TE },
   'noto-sans-telugu': { family: '"Noto Sans Telugu", sans-serif', hero: 700, body: NOTO_SANS_TE },
   'tiro-telugu': { family: '"Tiro Telugu", "Noto Serif Telugu", serif', hero: 400, body: HIND_GUNTUR },
   'hind-guntur': { family: '"Hind Guntur", "Noto Sans Telugu", sans-serif', hero: 700, body: HIND_GUNTUR },
-  'anek-telugu': { family: '"Anek Telugu", "Noto Sans Telugu", sans-serif', hero: 700, body: { family: '"Anek Telugu", "Noto Sans Telugu", sans-serif', weight: 500 } },
+  'anek-telugu': { family: '"Anek Telugu", "Noto Sans Telugu", sans-serif', hero: 800, heroStretch: 'condensed', body: { family: '"Anek Telugu", "Noto Sans Telugu", sans-serif', weight: 500, stretch: 'semi-condensed' } },
   ramabhadra: { family: 'Ramabhadra, "Noto Serif Telugu", serif', hero: 400, body: HIND_GUNTUR },
 };
 // Vertical position of a block within the usable text area, 0 = top edge, 1 = bottom edge.
@@ -1872,6 +1946,10 @@ export async function renderCornerPoster(
     const baseSize = 38 * s, heroScale = 1.8, refSize = 32 * s;
     const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design, fontStyle);
     const layout = buildClauseBlock(ctx, verse.primaryText, {
+      keyPhrase: design?.emphasis?.[verse.primaryLang],
+      fillKey: design?.typeStyle === 'impact',
+      fillMax: 1.6,
+      uppercase: verse.primaryLang === 'en' && englishFontFamily.includes('Oswald'),
       baseFont: `${pro.bodyWeight} ${baseSize}px ${pro.body}`,
       heroFont: `${pro.heroWeight} ${baseSize * heroScale}px ${pro.hero}`,
       baseLH: baseSize * 1.42,
@@ -1898,6 +1976,10 @@ export async function renderCornerPoster(
     const baseWeight = proEnglishWeights(englishFontFamily).body;
     void englishBodyWeight;
     const layout = buildClauseBlock(ctx, verse.englishText!, {
+      keyPhrase: design?.emphasis?.en,
+      fillKey: design?.typeStyle === 'impact',
+      fillMax: 1.5,
+      uppercase: englishFontFamily.includes('Oswald'),
       baseFont: `${baseWeight} ${baseSize}px ${englishFontFamily}`,
       heroFont: englishHeroFont(baseSize * heroScale),
       baseLH: baseSize * 1.45,
@@ -1975,7 +2057,8 @@ export async function renderCornerPoster(
   const themeFor = (b: LangBlock, top: number, x: number, align: Align) => {
     if (!detailGrid) return pickTheme(90, accentColorHex);
     const r = rectOf(b, top, x, align);
-    return pickTheme(regionStats(detailGrid, width, height, r.x0, r.y0, r.x1, r.y1).lum, accentColorHex);
+    const st = regionStats(detailGrid, width, height, r.x0, r.y0, r.x1, r.y1);
+    return pickTheme(st.lum, accentColorHex, st.peakBusy);
   };
   const stackedBusyOf = (st: ReturnType<typeof layoutStacked>) => Math.max(
     busyOf(st.primaryBlock, st.top, st.x, 'center'),
@@ -2010,7 +2093,9 @@ export async function renderCornerPoster(
   scale = stacked.s;
   const { primaryBlock, englishBlock, dividerGap, top: stackedTop, x: stackedX, bestStartRow, bandRows } = stacked;
 
-  const stackedTheme = pickTheme(detailGrid ? averageLuminanceInBand(detailGrid, bestStartRow, bandRows) : 90, accentColorHex);
+  const stackedStats = detailGrid ? regionStats(detailGrid, width, height, stackedX - MAX_W / 2, stackedTop, stackedX + MAX_W / 2, stackedTop + stacked.totalH) : null;
+  void bestStartRow; void bandRows;
+  const stackedTheme = pickTheme(stackedStats ? stackedStats.lum : 90, accentColorHex, stackedStats?.peakBusy);
   let placed: Placed[] = [{ block: primaryBlock, top: stackedTop, x: stackedX, align: 'center', theme: stackedTheme }];
   if (englishBlock) {
     placed.push({ block: englishBlock, top: stackedTop + primaryBlock.height + dividerGap, x: stackedX, align: 'center', theme: stackedTheme });

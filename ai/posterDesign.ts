@@ -14,7 +14,7 @@ import type {
 } from '../types';
 
 // Bump whenever the prompt or validation below changes materially.
-export const POSTER_DESIGN_VERSION = 3; // 3: one of two professional type styles per design (no font mixing)
+export const POSTER_DESIGN_VERSION = 4; // 4: Impact style, AI-chosen key words
 
 const VARIANT_COUNT = 3;
 const CACHE_DIR = path.join(process.cwd(), 'cache', 'poster-design');
@@ -30,6 +30,7 @@ const ANCHORS: PosterAnchor[] = ['top', 'upper', 'middle', 'lower', 'bottom'];
 const TYPE_STYLES = {
   classic: { tamilFont: 'noto-serif-tamil', teluguFont: 'noto-serif-telugu', englishFont: 'playfair' },
   elegant: { tamilFont: 'tiro-tamil', teluguFont: 'tiro-telugu', englishFont: 'eb-garamond' },
+  impact: { tamilFont: 'anek-tamil', teluguFont: 'anek-telugu', englishFont: 'oswald' },
 } as const satisfies Record<string, { tamilFont: PosterTamilFont; teluguFont: PosterTeluguFont; englishFont: PosterEnglishFont }>;
 
 const SYSTEM_PROMPT = `You are an art director for a Christian devotional channel, designing bilingual Bible-verse posters (4:5, 1080x1350). Each poster shows the verse in an Indian language (Tamil or Telugu - one design is used for both) and in English, over the background photo you are shown, which is already cropped exactly as the poster frame.
@@ -47,15 +48,18 @@ Typography vocabulary (only these exist):
 - typeStyle (the complete font set - pick the ONE that best fits this verse and photo):
   classic - Noto Serif Tamil / Noto Serif Telugu emphasis with clean sans body, Playfair Display for English. Formal, majestic, declarative verses (praise, commands, God's power and promises); strong, structured photos.
   elegant - Tiro Tamil / Tiro Telugu calligraphic serif emphasis with refined sans body, EB Garamond for English. Tender, comforting, intimate verses (love, rest, healing, God's care); soft, gentle photos.
+  impact - heavy condensed Anek Tamil / Anek Telugu with Oswald capitals for English, key words set very large in a stacked block. Strong, declarative, faith-building verses (victory, rising again, courage, exaltation, promises of action); bold, dramatic photos.
 - primaryWeight: regular | bold.
 - heroMode: firstWord (opening word(s) enlarged in the accent colour) | none (uniform, quieter).
 - divider: flourish (ornamental) | rule (simple line) | none.
 - accentColor: pick from this curated palette (or a very close variant) to harmonise with the photo's own colours and the verse mood - champagne #D9B76A, antique gold #C9A24A, amber #E2A256, copper #C98455, rose gold #D69A86, dusty rose #D4A0A6, lavender #B7A3D3, slate blue #93AECB, teal mist #86B8B3, sage #A8B98E. Text is always warm white on a softly darkened photo; the accent is used only for the emphasised words, references and divider.
 
+Also choose "emphasis": for each language, the 1-4 words that carry the verse's core message (e.g. the promise, the action, the name of God) - copied EXACTLY, character for character, from that language's verse text above, as one continuous phrase. Never the whole verse, never just a filler word. They are set large in the accent colour on their own line, so pick words that read powerfully alone.
+
 Use the same typeStyle in every variant - the best match for this verse and photo - and vary only layout, divider and accent between variants. Keep it reverent and legible - a devotional poster, not a fashion ad.
 
 Reply with JSON only:
-{"designs":[{"name":"2-3 word label","arrangement":"stacked|split","primary":{"anchor":"...","align":"...","sizeScale":1.0},"english":{"anchor":"...","align":"...","sizeScale":1.0},"typeStyle":"classic|elegant","primaryWeight":"bold","heroMode":"firstWord","divider":"flourish","accentColor":"#RRGGBB","rationale":"one sentence: where the clear space is and why this design fits"}]}`;
+{"emphasis":{"ta":"exact Tamil phrase","te":"exact Telugu phrase","en":"exact English phrase"},"designs":[{"name":"2-3 word label","arrangement":"stacked|split","primary":{"anchor":"...","align":"...","sizeScale":1.0},"english":{"anchor":"...","align":"...","sizeScale":1.0},"typeStyle":"classic|elegant|impact","primaryWeight":"bold","heroMode":"firstWord","divider":"flourish","accentColor":"#RRGGBB","rationale":"one sentence: where the clear space is and why this design fits"}]}`;
 
 export interface PosterDesignRequest {
   backgroundImageBase64: string;
@@ -125,7 +129,7 @@ function validateBlock(raw: any): PosterBlockDesign {
 }
 
 function validateDesign(raw: any, fallbackAccent: string): PosterDesign {
-  const typeStyle = pick(raw?.typeStyle, ['classic', 'elegant'] as const, 'classic');
+  const typeStyle = pick(raw?.typeStyle, ['classic', 'elegant', 'impact'] as const, 'classic');
   const fonts = TYPE_STYLES[typeStyle];
   return {
     name: typeof raw?.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 32) : 'Design',
@@ -144,6 +148,22 @@ function validateDesign(raw: any, fallbackAccent: string): PosterDesign {
     accentColor: typeof raw?.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.accentColor) ? raw.accentColor : fallbackAccent,
     rationale: typeof raw?.rationale === 'string' ? raw.rationale.slice(0, 300) : '',
   };
+}
+
+// Key phrases are only kept when they really are a short, exact, continuous phrase of that
+// language's verse (the model never writes Scripture - it only points at words already there).
+function validateEmphasis(raw: any, req: PosterDesignRequest): PosterDesign['emphasis'] | null {
+  const norm = (s: string) => s.replace(/[\u201C\u201D\u2018\u2019"]/g, '').replace(/\s+/g, ' ').trim();
+  const check = (phrase: unknown, verse: string): string | undefined => {
+    if (typeof phrase !== 'string') return undefined;
+    const p = norm(phrase).replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, '');
+    const words = p.split(' ').filter(Boolean);
+    const v = norm(verse);
+    if (!p || words.length > 5 || p.length >= v.length * 0.8) return undefined;
+    return v.includes(p) ? p : undefined;
+  };
+  const out = { ta: check(raw?.ta, req.tamil), te: check(raw?.te, req.telugu), en: check(raw?.en, req.english) };
+  return out.ta || out.te || out.en ? out : null;
 }
 
 // Returns up to VARIANT_COUNT validated designs, or [] when Claude is unavailable - callers then
@@ -167,7 +187,8 @@ export async function designPosters(req: PosterDesignRequest): Promise<PosterDes
     const frame = await posterFrameJpeg(req.backgroundImageBase64);
     const raw = await askClaudeVisionForJson(SYSTEM_PROMPT, frame, 'image/jpeg', userText, 2500);
     const list: any[] = Array.isArray(raw?.designs) ? raw.designs : [];
-    const designs = list.slice(0, VARIANT_COUNT).map((d) => validateDesign(d, req.accentColor || '#C9A063'));
+    const emphasis = validateEmphasis(raw?.emphasis, req);
+    const designs = list.slice(0, VARIANT_COUNT).map((d) => ({ ...validateDesign(d, req.accentColor || '#C9A063'), ...(emphasis ? { emphasis } : {}) }));
     if (designs.length) writeCache(key, designs);
     return designs;
   } catch (err) {
