@@ -35,7 +35,7 @@ const BACKGROUND_REVIEW_MAX_ATTEMPTS = 5;
 // When images come from the free fallback models (Pollinations account out of pollen), retries rarely
 // do better and each costs ~15s of generation plus a review - stop after this many and use the best
 // candidate (or the figure-free fallback below).
-const FREE_MODEL_REVIEW_MAX_ATTEMPTS = 2;
+const FREE_MODEL_REVIEW_MAX_ATTEMPTS = 3;
 
 const BACKGROUND_RETRY_COMPOSITION_OVERRIDE = 'CRITICAL COMPOSITION OVERRIDE (RETRY ESCALATION): the entire subject is confined to a small tight group strictly within the BOTTOM 25% of the frame only. No head, hand, shoulder, building, tree, or tall silhouette crosses the 30% vertical line or above. The TOP 70% of the frame is COMPLETELY EMPTY — only plain open sky, soft blurred distant atmosphere, or smooth gradient. Negative constraint: no vertically-tall standing figure, no tower, no steeple, no object taller than 25% of frame height anywhere in the image. If a person is in the shot, the previous attempt failed because a full head-to-foot figure was merely positioned low instead of being cropped — fix this by re-framing the shot itself as a tight crop from the shoulders or waist down, with the head and face excluded from the frame entirely, rather than trying harder to position an uncropped figure.';
 
@@ -102,6 +102,22 @@ function proQualityRetryOverrideFor(layout: PosterLayoutFull): string {
   return PRO_QUALITY_RETRY_OVERRIDE;
 }
 
+// Short, subject-first prompt for the free fallback image models (see generateBackground's
+// freePrompt): the verse's one-sentence scene, minus the layout instructions meant for the paid model
+// ("framed from the waist down to keep the upper frame empty..."), plus a few style words. Long
+// prompts lost the subject entirely on these models.
+function compactScenePrompt(visualConcept: string | undefined, fallbackPrompt: string): string {
+  const source = (visualConcept || fallbackPrompt).replace(/\s+/g, ' ').trim();
+  const scene = source
+    .split(/(?<=[.;])\s+/)[0] // first sentence only
+    .replace(/,?\s*(?:framed|framing|shot from|to (?:ensure|keep|leave)|leaving|so that|with (?:the )?(?:upper|top)|negative space|for text)[^,.;]*/gi, '')
+    .replace(/[.;,\s]+$/, '');
+  const words = scene.split(' ');
+  const trimmed = words.length > 40 ? words.slice(0, 40).join(' ') : scene;
+  return `${trimmed}. Cinematic photograph, soft natural light, rich colour, shallow depth of field, calm uncluttered sky or soft background in the upper half.`;
+}
+const FREE_NEGATIVE_PROMPT = 'hands, fingers, deformed anatomy, extra limbs, text, letters, watermark, logo, cluttered, busy pattern, cartoon, illustration';
+
 async function generateReviewedBackground(
   prompt: string,
   negativePrompt: string | undefined,
@@ -143,6 +159,10 @@ async function generateReviewedBackground(
     const background = await generateBackground({
       prompt: attemptPrompt,
       negativePrompt: safeNegativePrompt,
+      // Free models: the same short scene prompt on every attempt (a fresh seed each time) - the long
+      // retry corrections above are for the paid model and pushed the subject out of the free ones.
+      freePrompt: compactScenePrompt(visualConcept, prompt),
+      freeNegativePrompt: FREE_NEGATIVE_PROMPT,
       width,
       height,
       cacheKey,

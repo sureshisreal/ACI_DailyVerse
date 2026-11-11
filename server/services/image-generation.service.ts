@@ -85,7 +85,9 @@ function getModel(): string {
 // aspect ratio (see fitToRequestedAspect) - otherwise the review rejects it outright as not
 // portrait. Verified working 2026-11-11. Override with POLLINATIONS_FREE_MODELS (comma list; empty
 // string disables).
-const DEFAULT_FREE_MODELS = 'community/scriptsnsenses-sys/sdxl-lightning-free,community/scriptsnsenses-sys/flux-2-dev-free';
+// FLUX.2 first: it follows the scene description far better (SDXL Lightning reads only ~77 tokens and
+// kept returning a generic wall with the verse's subject missing); its square output is cropped.
+const DEFAULT_FREE_MODELS = 'community/scriptsnsenses-sys/flux-2-dev-free,community/scriptsnsenses-sys/sdxl-lightning-free';
 function getFreeModels(): string[] {
   const raw = process.env.POLLINATIONS_FREE_MODELS ?? DEFAULT_FREE_MODELS;
   return raw.split(',').map((m) => m.trim()).filter((m) => m && m !== getModel());
@@ -138,6 +140,11 @@ interface GenerateBackgroundRequest {
   // later non-forced request (including this verse's own video/meditation generation later in the
   // same run) picks up the new one.
   forceRegenerate?: boolean;
+  // A short, subject-first version of the prompt for the free fallback models, whose text encoders
+  // drop most of a long cinematographer-style prompt (the subject was being cut off). The paid model
+  // keeps the full prompt.
+  freePrompt?: string;
+  freeNegativePrompt?: string;
 }
 
 interface GenerateBackgroundResult {
@@ -357,7 +364,10 @@ export async function generateBackground(req: GenerateBackgroundRequest): Promis
   let modelIndex = 0;
   const keyedUrl = (model: string) => {
     // Keyed API: key goes in the Authorization header only (see fetchFromPollinations), never the URL.
-    const u = new URL(`${GEN_IMAGE_BASE}/${encodeURIComponent(req.prompt)}`);
+    const isFree = model !== getModel();
+    const prompt = isFree && req.freePrompt ? req.freePrompt : req.prompt;
+    const u = new URL(`${GEN_IMAGE_BASE}/${encodeURIComponent(prompt)}`);
+    if (isFree && req.freeNegativePrompt) u.searchParams.set('negative_prompt', req.freeNegativePrompt);
     u.searchParams.set('model', model);
     u.searchParams.set('width', String(width));
     u.searchParams.set('height', String(height));

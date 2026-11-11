@@ -781,54 +781,38 @@ function hexToHsl(hex: string): { h: number; s: number; l: number } {
   return { h, s, l };
 }
 
-function hslToHex(h: number, s: number, l: number): string {
-  const hue2rgb = (p: number, q: number, t: number) => {
-    let tt = t;
-    if (tt < 0) tt += 1;
-    if (tt > 1) tt -= 1;
-    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
-    if (tt < 1 / 2) return q;
-    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
-    return p;
-  };
-  let r: number, g: number, b: number;
-  if (s === 0) {
-    r = g = b = l;
-  } else {
-    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    const p = 2 * l - q;
-    r = hue2rgb(p, q, h + 1 / 3);
-    g = hue2rgb(p, q, h);
-    b = hue2rgb(p, q, h - 1 / 3);
-  }
-  const toHex = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0');
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-}
-
-// Claude picks the accent hue/saturation to suit the verse's mood and the background's color grade
-// (see ai/analyzer.ts) - but exact lightness for legibility is clamped here rather than trusted
-// from the model, so the accent stays vivid against a dark band and stays deep/legible against a
-// light one regardless of what lightness value Claude happened to output.
-function accentForTheme(accentHex: string, isLight: boolean): string {
-  const { h, s } = hexToHsl(accentHex);
-  const sat = Math.max(0.45, Math.min(0.9, s || 0.7)); // saturation floor raised 0.35 -> 0.45 for brand-pop consistency
-  // On a light background the accent must be dark enough to hold its own against bright texture, and
-  // rich rather than muddy (a desaturated dark gold read as olive) - so deeper and more saturated there.
-  // On dark: light and slightly restrained (a soft metallic rather than a loud saturated hue).
-  return isLight ? hslToHex(h, Math.max(0.62, sat), 0.29) : hslToHex(h, Math.min(0.62, sat), 0.72);
-}
 
 // --- Accent colour matched to the photo ---
 // Brand-safe accents a verse's colour is matched to - warm metallics first (the ministry's gold look),
 // then soft naturals - so the accent always belongs to the image without ever going garish.
-// Champagne, amber, copper, rose gold, dusty rose, lavender, slate blue, teal mist, sage.
-const BRAND_ACCENTS = ['#D9B76A', '#E2A256', '#C98455', '#D69A86', '#D4A0A6', '#B7A3D3', '#93AECB', '#86B8B3', '#A8B98E'];
+// --- Designer-picked colour pairs ---
+// Every poster's colour comes from one of these five two-tone pairs - never from computed hue shifts,
+// which produced off combinations (pinkish coral on skin tones, muddy lavender). Each pair has a
+// version for dark (light text) and light (dark text) backgrounds, plus an outline colour.
+interface Duotone { name: string; base: string; dark: [string, string]; light: [string, string]; stroke: string }
+const DUOTONES: Duotone[] = [
+  { name: 'gold', base: '#D4A845', dark: ['#FFE6A3', '#E2A23B'], light: ['#9A6A12', '#6E4808'], stroke: '#2A1A06' },
+  { name: 'amber', base: '#E39A3B', dark: ['#FFD9A0', '#F0862F'], light: ['#B5560F', '#7C3606'], stroke: '#2B1405' },
+  { name: 'champagne', base: '#D9C08A', dark: ['#FFF4D8', '#D8B56C'], light: ['#8C6A2C', '#5E4519'], stroke: '#2A1E0C' },
+  { name: 'sky', base: '#7FB2E5', dark: ['#E3F1FF', '#7DB4EC'], light: ['#2C6AA6', '#1B4775'], stroke: '#0B1A2B' },
+  { name: 'teal', base: '#5FB3A8', dark: ['#D8F6F0', '#5DBAAD'], light: ['#1E7A6E', '#13554C'], stroke: '#08211D' },
+];
+// Nearest pair by hue; a low-saturation colour (white/grey/beige) maps to champagne.
+function duotoneFor(hex: string): Duotone {
+  const { h, s } = hexToHsl(hex);
+  if (s < 0.25) return DUOTONES.find((d) => d.name === 'champagne')!;
+  const dist = (a: number, b: number) => { const x = Math.abs(a - b); return Math.min(x, 1 - x); };
+  return DUOTONES.filter((d) => d.name !== 'champagne')
+    .reduce((best, d) => (dist(hexToHsl(d.base).h, h) < dist(hexToHsl(best.base).h, h) ? d : best));
+}
+// Photo matching picks among the pair bases.
+const BRAND_ACCENTS = DUOTONES.map((d) => d.base);
 
 // Picks the accent from the background's own palette: the strongest colour in the photo (by area,
 // saturation and mid-tone brightness, with warm light weighted up so a golden glow beats a big blue
 // sky), snapped to the nearest brand-safe accent. A mostly white/grey/black photo has no real colour
 // to match, so the verse's theme accent (fallbackHex) is kept. Lightness is tuned later per text
-// band for contrast (accentForTheme).
+// band by its colour pair (duotoneFor / pickTheme).
 export function accentFromImage(img: HTMLImageElement | null, fallbackHex: string): string {
   if (!img) return fallbackHex;
   try {
@@ -900,21 +884,17 @@ const CLEAN_LIGHT_MAX_BUSY = 6;
 const BODY_OUTLINE_MIN_BUSY = 10;
 function pickTheme(bandLuminance: number, accentHex: string, busy?: number): PosterTheme {
   const isLight = busy !== undefined && bandLuminance >= CLEAN_LIGHT_MIN_LUM && busy <= CLEAN_LIGHT_MAX_BUSY;
-  const accent = accentForTheme(accentHex, isLight);
-  const { h, s } = hexToHsl(accentHex);
-  const sat = Math.max(0.55, Math.min(0.9, (s || 0.6) + 0.15));
-  // Gradient ends ~12-15 degrees either side of the accent hue: related, but enough to glow.
-  const hueA = (h - 0.035 + 1) % 1, hueB = (h + 0.04) % 1;
+  const pair = duotoneFor(accentHex);
   if (isLight) {
     return {
-      isLight: true, baseColor: '#1f1b17', heroColor: accent, shadowColor: 'rgba(255,250,240,0.6)', shadowBlur: 10, accentColor: accent,
-      heroGradient: [hslToHex(hueA, sat, 0.36), hslToHex(hueB, sat, 0.28)],
+      isLight: true, baseColor: '#1f1b17', heroColor: pair.light[1], shadowColor: 'rgba(255,250,240,0.6)', shadowBlur: 10,
+      accentColor: pair.light[0], heroGradient: pair.light,
     };
   }
   return {
-    isLight: false, baseColor: PRO_TEXT, heroColor: accent, shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 18, accentColor: accent,
-    heroGradient: [hslToHex(hueA, sat, 0.74), hslToHex(hueB, Math.min(0.95, sat + 0.05), 0.62)],
-    heroStroke: hslToHex(h, Math.min(0.7, sat), 0.16),
+    isLight: false, baseColor: PRO_TEXT, heroColor: pair.dark[1], shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 18,
+    accentColor: pair.dark[1], heroGradient: pair.dark,
+    heroStroke: pair.stroke,
     bodyStroke: busy !== undefined && busy > BODY_OUTLINE_MIN_BUSY ? 'rgba(18,12,8,0.75)' : undefined,
   };
 }
@@ -3201,8 +3181,8 @@ export async function renderMeditationFrame(
   const preset = FONT_STYLE_PRESETS[fontStyle];
   const design = input.design;
   const designEnglish = design ? DESIGN_ENGLISH_FONTS[design.englishFont] : null;
-  // Same tuning as the posters' accent on dark: light, slightly restrained.
-  const accent = accentForTheme(design?.accentColor || input.accentColor || PALETTE.GOLD, false);
+  // The same colour pair as the posters (see DUOTONES), dark-background version.
+  const accent = duotoneFor(design?.accentColor || input.accentColor || PALETTE.GOLD).dark[1];
   const englishFamily = designEnglish ? designEnglish.family : preset.englishFontFamily;
   const englishItalic = design ? design.englishItalic : preset.englishItalic;
   const colLeft = width * 0.07;

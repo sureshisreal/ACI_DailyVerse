@@ -52,7 +52,7 @@ Typography vocabulary (only these exist):
 - primaryWeight: regular | bold.
 - heroMode: firstWord (opening word(s) enlarged in the accent colour) | none (uniform, quieter).
 - divider: flourish (ornamental) | rule (simple line) | none.
-- accentColor: pick from this curated palette (or a very close variant) to harmonise with the photo's own colours and the verse mood - champagne #D9B76A, antique gold #C9A24A, amber #E2A256, copper #C98455, rose gold #D69A86, dusty rose #D4A0A6, lavender #B7A3D3, slate blue #93AECB, teal mist #86B8B3, sage #A8B98E. Text is always warm white on a softly darkened photo; the accent is used only for the emphasised words, references and divider.
+- accentColor: exactly one of these five designer colour pairs, chosen to suit the photo and the verse mood - gold #D4A845 (the default; warm, reverent), amber #E39A3B (sunrise, fire, strength), champagne #D9C08A (soft, pale, misty scenes), sky #7FB2E5 (blue skies, water, night), teal #5FB3A8 (green landscapes, calm, renewal). Each becomes a two-tone gradient with a matching outline. Text is always warm white on a softly darkened photo; the accent is used only for the emphasised words, references and divider.
 
 Also choose "emphasis": for each language, the 1-4 words that carry the verse's core message (e.g. the promise, the action, the name of God) - copied EXACTLY, character for character, from that language's verse text above, as one continuous phrase. Never the whole verse, never just a filler word. They are set large in the accent colour on their own line, so pick words that read powerfully alone.
 
