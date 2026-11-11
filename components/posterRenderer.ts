@@ -1264,14 +1264,17 @@ async function renderVersePosterInternal(
     const scrimTop = curY - 50;
     const scrimBottom = curY + totalH + 50;
     const feather = 90;
-    const peak = isLight ? 0.08 : 0.46;
+    // Light theme: a soft cream haze behind the dark text (as on the bilingual posters) - the old 8%
+    // black barely registered, leaving dark text straight on bright, busy texture.
+    const peak = isLight ? 0.44 : 0.46;
+    const rgb = isLight ? '252,249,243' : '0,0,0';
     const midFeather = peak * 0.83;
     const scrimGrad = ctx.createLinearGradient(0, scrimTop - feather, 0, scrimBottom + feather);
-    scrimGrad.addColorStop(0, 'rgba(0,0,0,0)');
-    scrimGrad.addColorStop(0.18, `rgba(0,0,0,${midFeather})`);
-    scrimGrad.addColorStop(0.5, `rgba(0,0,0,${peak})`);
-    scrimGrad.addColorStop(0.82, `rgba(0,0,0,${midFeather})`);
-    scrimGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    scrimGrad.addColorStop(0, `rgba(${rgb},0)`);
+    scrimGrad.addColorStop(0.18, `rgba(${rgb},${midFeather})`);
+    scrimGrad.addColorStop(0.5, `rgba(${rgb},${peak})`);
+    scrimGrad.addColorStop(0.82, `rgba(${rgb},${midFeather})`);
+    scrimGrad.addColorStop(1, `rgba(${rgb},0)`);
     ctx.fillStyle = scrimGrad;
     ctx.fillRect(0, scrimTop - feather, width, (scrimBottom + feather) - (scrimTop - feather));
   }
