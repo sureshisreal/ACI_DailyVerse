@@ -118,6 +118,57 @@ const FONT_PRELOAD_SPECS = [
   '900 32px "Noto Sans Telugu"',
 ];
 
+// --- Professional type system ---
+// One disciplined pairing per language, used by the posters, video frames and meditation card:
+// emphasis in a refined serif at bold (never black) weight, body in a clean sans for Tamil/Telugu or a
+// regular-weight serif for English, references as small tracked capitals - and always warm-white text
+// on a graded photo. Script faces and heavy black weights read as amateur, so neither is used.
+const PRO_PRIMARY: Record<'ta' | 'te', { hero: string; body: string }> = {
+  ta: { hero: '"Noto Serif Tamil", serif', body: '"Noto Sans Tamil", sans-serif' },
+  te: { hero: '"Noto Serif Telugu", serif', body: '"Noto Sans Telugu", sans-serif' },
+};
+const PRO_INDIC_BODY_WEIGHT = 500;
+const PRO_HERO_WEIGHT = 700;
+const PRO_TEXT = '#FBF7F0';
+// Regular-weight serif body / bold emphasis per English family (only weights index.html loads).
+function proEnglishWeights(family: string): { body: number; hero: number } {
+  if (family.includes('Playfair')) return { body: 500, hero: 700 };
+  if (family.includes('Cormorant')) return { body: 700, hero: 700 }; // 400 is too thin at poster sizes
+  if (family.includes('Cinzel')) return { body: 400, hero: 700 };
+  if (family.includes('Montserrat')) return { body: 500, hero: 700 };
+  return { body: 400, hero: 700 }; // Lora, Lato
+}
+// Hero/body families for a poster's primary language. A design may choose the emphasis face; body
+// text always stays the clean sans for Tamil/Telugu.
+function proPrimaryFonts(lang: 'ta' | 'te' | 'en', englishFamily: string, design?: PosterDesign | null) {
+  if (lang === 'en') {
+    const w = proEnglishWeights(englishFamily);
+    return { hero: englishFamily, heroWeight: w.hero, body: englishFamily, bodyWeight: w.body };
+  }
+  const hero = design ? (lang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont]) : PRO_PRIMARY[lang].hero;
+  return { hero, heroWeight: PRO_HERO_WEIGHT, body: PRO_PRIMARY[lang].body, bodyWeight: PRO_INDIC_BODY_WEIGHT };
+}
+// Reference ("MARK 10:16") font: tracked capitals for English; the clean sans for Tamil/Telugu.
+function proReferenceFont(lang: 'ta' | 'te' | 'en', px: number): string {
+  return lang === 'en' ? `700 ${px}px Montserrat, "Helvetica Neue", Arial, sans-serif` : `700 ${px * 1.12}px ${PRO_PRIMARY[lang].body}`;
+}
+const proReferenceText = (lang: 'ta' | 'te' | 'en', ref: string) => (lang === 'en' ? ref.toUpperCase() : ref);
+// Draws one reference line. English is letter-spaced (drawn per character - safe for Latin only;
+// Tamil/Telugu shaping would break, so those are drawn normally).
+function drawReferenceLine(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, align: CanvasTextAlign, lang: 'ta' | 'te' | 'en') {
+  if (lang !== 'en') { ctx.fillText(text, x, y); return; }
+  const px = Number(/(\d+(?:\.\d+)?)px/.exec(ctx.font)?.[1] || 20);
+  const spacing = px * 0.2;
+  const chars = Array.from(text);
+  const widths = chars.map((c) => ctx.measureText(c).width);
+  const total = widths.reduce((a, b) => a + b, 0) + spacing * Math.max(0, chars.length - 1);
+  let cx = align === 'center' ? x - total / 2 : align === 'right' || align === 'end' ? x - total : x;
+  const prevAlign = ctx.textAlign;
+  ctx.textAlign = 'left';
+  chars.forEach((c, i) => { ctx.fillText(c, cx, y); cx += widths[i] + spacing; });
+  ctx.textAlign = prevAlign;
+}
+
 let fontsPreloadedPromise: Promise<void> | null = null;
 // Latin, Tamil and Telugu characters - see ensurePosterFontsPreloaded.
 const FONT_PRELOAD_SAMPLE = 'Aa1 கர்த்தர் தேவன் దేవుడు ప్రభువు';
@@ -677,7 +728,8 @@ function accentForTheme(accentHex: string, isLight: boolean): string {
   const sat = Math.max(0.45, Math.min(0.9, s || 0.7)); // saturation floor raised 0.35 -> 0.45 for brand-pop consistency
   // On a light background the accent must be dark enough to hold its own against bright texture, and
   // rich rather than muddy (a desaturated dark gold read as olive) - so deeper and more saturated there.
-  return isLight ? hslToHex(h, Math.max(0.62, sat), 0.29) : hslToHex(h, sat, 0.68);
+  // On dark: light and slightly restrained (a soft metallic rather than a loud saturated hue).
+  return isLight ? hslToHex(h, Math.max(0.62, sat), 0.29) : hslToHex(h, Math.min(0.62, sat), 0.72);
 }
 
 // --- Accent colour matched to the photo ---
@@ -745,11 +797,14 @@ interface PosterTheme {
 }
 
 function pickTheme(bandLuminance: number, accentHex: string): PosterTheme {
-  const isLight = bandLuminance > 150;
+  // Always warm-white text on a graded photo (see the professional type system above): dark text on a
+  // bright photo read as a draft. Bright text bands get a stronger scrim instead (see callers).
+  void bandLuminance;
+  const isLight = false;
   const accent = accentForTheme(accentHex, isLight);
   return isLight
     ? { isLight: true, baseColor: '#241a10', heroColor: accent, shadowColor: 'rgba(255,250,240,0.85)', shadowBlur: 16, accentColor: accent }
-    : { isLight: false, baseColor: PALETTE.WHITE, heroColor: accent, shadowColor: 'rgba(0,0,0,0.75)', shadowBlur: 14, accentColor: accent };
+    : { isLight: false, baseColor: PRO_TEXT, heroColor: accent, shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 18, accentColor: accent };
 }
 
 // Draws a clause block's text lines - the hero clause in the theme's accent color and italic
@@ -1105,24 +1160,9 @@ async function renderVersePosterInternal(
   const design = verse.design;
   const designEnglish = design ? DESIGN_ENGLISH_FONTS[design.englishFont] : null;
   const accentColorHex = design?.accentColor || verse.accentColor || PALETTE.GOLD;
-  const primaryFontFamily = design && verse.primaryLang !== 'en'
-    ? (verse.primaryLang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont])
-    : primaryFontFamilyFor(verse.primaryLang, fontStyle);
-  void 'Montserrat';
   const englishFontFamily = designEnglish ? designEnglish.family : preset.englishFontFamily;
-  const englishItalicOn = design ? design.englishItalic : preset.englishItalic;
-  const englishStyle = englishItalicOn ? 'italic ' : '';
-  const englishWeight = designEnglish ? (englishItalicOn ? designEnglish.bodyItalic : designEnglish.body) : preset.englishWeight;
   const hasSecondaryEnglish = typeof verse.englishText === 'string' && typeof verse.englishRef === 'string';
-  // English-as-primary reuses its own family/italic/weight throughout (no synthetic weight jump
-  // for the hero clause - unlike Tamil/Telugu's forced 700/900, some English presets only have a
-  // single loaded weight, e.g. Cormorant Garamond/Lora at 400 - see FONT_STYLE_PRESETS), so hero
-  // emphasis there comes from size + accent color alone rather than a heavier weight.
-  const primaryIsEnglish = verse.primaryLang === 'en';
-  const primaryStylePrefix = primaryIsEnglish ? englishStyle : '';
-  const regularPrimary = design?.primaryWeight === 'regular';
-  const primaryBaseWeight = primaryIsEnglish ? englishWeight : regularPrimary ? 400 : 700;
-  const primaryHeroWeight = primaryIsEnglish ? (designEnglish ? designEnglish.hero : englishWeight) : regularPrimary ? 700 : 900;
+  // Fonts and weights for the verse text come from the professional type system (proPrimaryFonts).
 
   let scale = 1.0;
   const MIN_TEXT_SCALE = 0.6;
@@ -1146,9 +1186,10 @@ async function renderVersePosterInternal(
     gap = 32 * scale;
     dividerGap = 56 * scale;
 
+    const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design);
     primaryLayout = buildClauseBlock(ctx, verse.primaryText, {
-      baseFont: `${primaryStylePrefix}${primaryBaseWeight} ${primaryBaseSize}px ${primaryFontFamily}`,
-      heroFont: `${primaryStylePrefix}${primaryHeroWeight} ${primaryBaseSize * heroScale}px ${primaryFontFamily}`,
+      baseFont: `${pro.bodyWeight} ${primaryBaseSize}px ${pro.body}`,
+      heroFont: `${pro.heroWeight} ${primaryBaseSize * heroScale}px ${pro.hero}`,
       baseLH: primaryBaseSize * 1.42,
       heroLH: primaryBaseSize * heroScale * 1.48,
       clauseGap: 12 * scale,
@@ -1159,20 +1200,17 @@ async function renderVersePosterInternal(
 
     // The citation in the verse's own typeface and script, accent-coloured - not "Great Vibes", which
     // has no Tamil/Telugu glyphs (the book name fell back to another font beside ornate Latin digits).
-    primaryRefFont = primaryIsEnglish
-      ? `${englishStyle}${englishWeight} ${primaryRefSize * 0.8}px ${englishFontFamily}`
-      : `700 ${primaryRefSize * 0.78}px ${primaryFontFamily}`;
+    primaryRefFont = proReferenceFont(verse.primaryLang, primaryRefSize * 0.6);
     primaryRefLH = primaryRefSize * 1.4;
-    primaryRefLines = wrapText(ctx, verse.primaryRef, primaryRefFont, MAX_W - 60);
+    primaryRefLines = wrapText(ctx, proReferenceText(verse.primaryLang, verse.primaryRef), primaryRefFont, MAX_W - 60);
 
     let overflowsWidth = primaryLayout.overflowsWidth;
 
     if (hasSecondaryEnglish) {
-      const englishBaseWeight = primaryIsEnglish ? englishWeight : 500;
-      const englishHeroWeight = primaryIsEnglish ? englishWeight : 800;
+      const enW = proEnglishWeights(englishFontFamily);
       englishLayout = buildClauseBlock(ctx, verse.englishText!, {
-        baseFont: `${englishStyle}${englishBaseWeight} ${englishBaseSize}px ${englishFontFamily}`,
-        heroFont: `${englishStyle}${englishHeroWeight} ${englishBaseSize * englishHeroScale}px ${englishFontFamily}`,
+        baseFont: `${enW.body} ${englishBaseSize}px ${englishFontFamily}`,
+        heroFont: `${enW.hero} ${englishBaseSize * englishHeroScale}px ${englishFontFamily}`,
         baseLH: englishBaseSize * 1.45,
         heroLH: englishBaseSize * englishHeroScale * 1.45,
         clauseGap: 10 * scale,
@@ -1181,9 +1219,9 @@ async function renderVersePosterInternal(
         enableHero: design ? design.heroMode !== 'none' : true,
       });
 
-      englishRefFont = `${englishStyle}${englishWeight} ${englishRefSize * 0.8}px ${englishFontFamily}`;
+      englishRefFont = proReferenceFont('en', englishRefSize * 0.6);
       englishRefLH = englishRefSize * 1.5;
-      englishRefLines = wrapText(ctx, verse.englishRef!, englishRefFont, MAX_W - 60);
+      englishRefLines = wrapText(ctx, proReferenceText('en', verse.englishRef!), englishRefFont, MAX_W - 60);
 
       overflowsWidth = overflowsWidth || englishLayout.overflowsWidth;
     }
@@ -1266,7 +1304,7 @@ async function renderVersePosterInternal(
     const feather = 90;
     // Light theme: a soft cream haze behind the dark text (as on the bilingual posters) - the old 8%
     // black barely registered, leaving dark text straight on bright, busy texture.
-    const peak = isLight ? 0.44 : 0.46;
+    const peak = isLight ? 0.44 : Math.min(0.66, Math.max(0.4, 0.4 + ((bandLuminance - 110) / 145) * 0.26));
     const rgb = isLight ? '252,249,243' : '0,0,0';
     const midFeather = peak * 0.83;
     const scrimGrad = ctx.createLinearGradient(0, scrimTop - feather, 0, scrimBottom + feather);
@@ -1289,7 +1327,7 @@ async function renderVersePosterInternal(
   const hlPass: WordHighlightPass | undefined = highlight === undefined ? undefined : {
     boxes: [], glowWords: highlight === 'collect' ? undefined : highlight,
     glowColor: hexToRgba(accentColorHex, 0.95),
-    textColor: isLight ? theme.baseColor : '#FFFBEA',
+    textColor: isLight ? theme.baseColor : '#FFFFFF',
   };
   curY = paintClauseBlock(ctx, primaryLayout, curY, alignX, theme, 'center', hlPass);
   curY += gap;
@@ -1304,7 +1342,7 @@ async function renderVersePosterInternal(
   ctx.shadowOffsetY = isLight ? 0 : 3;
   primaryRefLines.forEach((line) => {
     curY += primaryRefLH / 2;
-    ctx.fillText(line, alignX, curY);
+    drawReferenceLine(ctx, line, alignX, curY, 'center', verse.primaryLang);
     curY += primaryRefLH / 2;
   });
   ctx.restore();
@@ -1327,7 +1365,7 @@ async function renderVersePosterInternal(
     ctx.shadowOffsetY = isLight ? 0 : 2;
     englishRefLines.forEach((line) => {
       curY += englishRefLH / 2;
-      ctx.fillText(line, alignX, curY);
+      drawReferenceLine(ctx, line, alignX, curY, 'center', 'en');
       curY += englishRefLH / 2;
     });
     ctx.restore();
@@ -1740,17 +1778,10 @@ export async function renderCornerPoster(
   const accentColorHex = design?.accentColor || verse.accentColor || PALETTE.GOLD;
   const designEnglish = design ? DESIGN_ENGLISH_FONTS[design.englishFont] : null;
   const englishFontFamily = designEnglish ? designEnglish.family : preset.englishFontFamily;
-  const englishItalic = design ? design.englishItalic : preset.englishItalic;
+  // Upright English body text throughout (italic serif beside a sans primary block looked mismatched).
+  const englishItalic = false;
   const englishStyle = englishItalic ? 'italic ' : '';
   const hasSecondaryEnglish = typeof verse.englishText === 'string' && typeof verse.englishRef === 'string';
-  const primaryIsEnglish = verse.primaryLang === 'en';
-  const primaryFontFamily = design && !primaryIsEnglish
-    ? (verse.primaryLang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont])
-    : primaryFontFamilyFor(verse.primaryLang, fontStyle);
-  const primaryStylePrefix = primaryIsEnglish ? englishStyle : '';
-  const regularPrimary = design?.primaryWeight === 'regular';
-  const primaryBaseWeight = primaryIsEnglish ? preset.englishWeight : regularPrimary ? 400 : 700;
-  const primaryHeroWeight = primaryIsEnglish ? preset.englishWeight : regularPrimary ? 700 : 900;
   const englishBodyWeight = designEnglish ? (englishItalic ? designEnglish.bodyItalic : designEnglish.body) : 600; // 600, not 500: the italic presets only ship 400 and 600+, so 500 silently rendered as the thin 400
   const englishSerifHeroWeight = designEnglish ? designEnglish.hero : 700;
   const heroEnabled = design ? design.heroMode !== 'none' : true;
@@ -1759,7 +1790,9 @@ export async function renderCornerPoster(
   // loops), so a hero containing an all-caps word (LORD, GOD) keeps the serif instead - as does a
   // design that asks for no script hero.
   const englishHeroWords = splitFirstWordHero(stripCurlyQuotes(verse.englishText || ''))[0];
-  const useScriptHero = (design ? design.heroScript : true) && !/\b[A-Z]{2,}\b/.test(englishHeroWords);
+  // No script faces (see the professional type system): the emphasis stays in the English serif.
+  void englishHeroWords;
+  const useScriptHero = false;
   const englishHeroFont = (size: number) => useScriptHero
     ? `700 ${size}px ${englishHeroFontFamily}`
     : `${englishStyle}${englishSerifHeroWeight} ${size}px ${englishFontFamily}`;
@@ -1786,9 +1819,10 @@ export async function renderCornerPoster(
   };
   const buildPrimaryBlock = (s: number, maxW: number): LangBlock => {
     const baseSize = 38 * s, heroScale = 1.8, refSize = 32 * s;
+    const pro = proPrimaryFonts(verse.primaryLang, englishFontFamily, design);
     const layout = buildClauseBlock(ctx, verse.primaryText, {
-      baseFont: `${primaryStylePrefix}${primaryBaseWeight} ${baseSize}px ${primaryFontFamily}`,
-      heroFont: `${primaryStylePrefix}${primaryHeroWeight} ${baseSize * heroScale}px ${primaryFontFamily}`,
+      baseFont: `${pro.bodyWeight} ${baseSize}px ${pro.body}`,
+      heroFont: `${pro.heroWeight} ${baseSize * heroScale}px ${pro.hero}`,
       baseLH: baseSize * 1.42,
       heroLH: baseSize * heroScale * 1.3,
       clauseGap: 12 * s,
@@ -1798,11 +1832,9 @@ export async function renderCornerPoster(
       heroMode: 'firstWord',
     });
     // Citation in the verse's own typeface (see renderVersePoster for why not the script face).
-    const refFont = primaryIsEnglish
-      ? `${englishStyle}${preset.englishWeight} ${refSize * 0.8}px ${englishFontFamily}`
-      : `700 ${refSize * 0.78}px ${primaryFontFamily}`;
+    const refFont = proReferenceFont(verse.primaryLang, refSize * 0.6);
     const refLH = refSize * 1.4;
-    const refLines = wrapText(ctx, verse.primaryRef, refFont, maxW - 20);
+    const refLines = wrapText(ctx, proReferenceText(verse.primaryLang, verse.primaryRef), refFont, maxW - 20);
     const refGap = 28 * s;
     return {
       layout, refLines, refFont, refLH, refGap,
@@ -1812,9 +1844,10 @@ export async function renderCornerPoster(
   };
   const buildEnglishBlock = (s: number, maxW: number): LangBlock => {
     const baseSize = 34 * s, heroScale = 1.6, refSize = 28 * s;
-    const baseWeight = primaryIsEnglish ? preset.englishWeight : englishBodyWeight;
+    const baseWeight = proEnglishWeights(englishFontFamily).body;
+    void englishBodyWeight;
     const layout = buildClauseBlock(ctx, verse.englishText!, {
-      baseFont: `${englishStyle}${baseWeight} ${baseSize}px ${englishFontFamily}`,
+      baseFont: `${baseWeight} ${baseSize}px ${englishFontFamily}`,
       heroFont: englishHeroFont(baseSize * heroScale),
       baseLH: baseSize * 1.45,
       heroLH: baseSize * heroScale * 1.25,
@@ -1824,9 +1857,9 @@ export async function renderCornerPoster(
       enableHero: heroEnabled,
       heroMode: 'firstWord',
     });
-    const refFont = `${englishStyle}${preset.englishWeight} ${refSize * 0.8}px ${englishFontFamily}`;
+    const refFont = proReferenceFont('en', refSize * 0.6);
     const refLH = refSize * 1.5;
-    const refLines = wrapText(ctx, verse.englishRef!, refFont, maxW - 20);
+    const refLines = wrapText(ctx, proReferenceText('en', verse.englishRef!), refFont, maxW - 20);
     const refGap = 28 * s * 0.6;
     return {
       layout, refLines, refFont, refLH, refGap,
@@ -2080,13 +2113,17 @@ export async function renderCornerPoster(
   }
 
   // Light-on-dark scrim behind each dark-themed block (stacked: one scrim over the whole band).
+  // Scrim strength follows the brightness behind the text: light text always, so a bright band needs
+  // more darkening (up to ~1.75x) to stay crisp.
+  const bandLum = (top: number, bottom: number) => (detailGrid ? regionStats(detailGrid, width, height, width * 0.12, top, width * 0.88, bottom).lum : 90);
   const paintDarkScrim = (top: number, bottom: number) => {
+    const k = Math.min(1.75, Math.max(1, 1 + ((bandLum(top, bottom) - 100) / 155) * 0.75));
     const scrimTop = top - 40, scrimBottom = bottom + 40, feather = 70;
     const scrimGrad = ctx.createLinearGradient(0, scrimTop - feather, 0, scrimBottom + feather);
     scrimGrad.addColorStop(0, 'rgba(0,0,0,0)');
-    scrimGrad.addColorStop(0.2, 'rgba(0,0,0,0.28)');
-    scrimGrad.addColorStop(0.5, 'rgba(0,0,0,0.36)');
-    scrimGrad.addColorStop(0.8, 'rgba(0,0,0,0.28)');
+    scrimGrad.addColorStop(0.2, `rgba(0,0,0,${0.28 * k})`);
+    scrimGrad.addColorStop(0.5, `rgba(0,0,0,${0.36 * k})`);
+    scrimGrad.addColorStop(0.8, `rgba(0,0,0,${0.28 * k})`);
     scrimGrad.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = scrimGrad;
     ctx.fillRect(0, scrimTop - feather, width, (scrimBottom + feather) - (scrimTop - feather));
@@ -2137,7 +2174,7 @@ export async function renderCornerPoster(
     ctx.shadowOffsetY = t.isLight ? 0 : isPrimary ? 3 : 2;
     block.refLines.forEach((line) => {
       y += block.refLH / 2;
-      ctx.fillText(line, pl.x, y);
+      drawReferenceLine(ctx, line, pl.x, y, align, isPrimary ? verse.primaryLang : 'en');
       y += block.refLH / 2;
     });
     ctx.restore();
@@ -2986,7 +3023,8 @@ export async function renderMeditationFrame(
   const preset = FONT_STYLE_PRESETS[fontStyle];
   const design = input.design;
   const designEnglish = design ? DESIGN_ENGLISH_FONTS[design.englishFont] : null;
-  const accent = design?.accentColor || input.accentColor || PALETTE.GOLD;
+  // Same tuning as the posters' accent on dark: light, slightly restrained.
+  const accent = accentForTheme(design?.accentColor || input.accentColor || PALETTE.GOLD, false);
   const englishFamily = designEnglish ? designEnglish.family : preset.englishFontFamily;
   const englishItalic = design ? design.englishItalic : preset.englishItalic;
   const colLeft = width * 0.07;
@@ -2996,17 +3034,16 @@ export async function renderMeditationFrame(
   const titleFamily = input.lang === 'en' ? englishFamily
     : design ? (input.lang === 'ta' ? DESIGN_TAMIL_FONTS[design.tamilFont] : DESIGN_TELUGU_FONTS[design.teluguFont])
     : preset.primaryFontFamily[input.lang];
-  const titleFont = (px: number) => input.lang === 'en'
-    ? `${englishItalic ? 'italic ' : ''}700 ${px}px ${titleFamily}`
-    : `700 ${px}px ${titleFamily}`;
-  const refFont = (px: number) => input.lang === 'en'
-    ? `${englishItalic ? 'italic ' : ''}${designEnglish ? designEnglish.body : preset.englishWeight} ${px}px ${titleFamily}`
-    : `400 ${px}px ${titleFamily}`;
+  void englishItalic; // upright throughout (professional type system)
+  const titleFont = (px: number) => `700 ${px}px ${titleFamily}`;
+  // Reference in the shared style: tracked capitals for English, the clean sans for Tamil/Telugu.
+  const refFont = (px: number) => proReferenceFont(input.lang, px * 0.62);
+  const refText = proReferenceText(input.lang, input.reference);
   const subFont = (px: number) => input.lang === 'en' ? `700 ${px}px Montserrat` : `700 ${px}px ${titleFamily}`;
 
   const title = MEDITATION_TITLE[input.lang];
   const titlePx = fitFontSize(ctx, title, titleFont, 104, 48, colW);
-  const refPx = fitFontSize(ctx, input.reference, refFont, 56, 28, colW);
+  const refPx = fitFontSize(ctx, refText, refFont, 56, 28, colW * 0.8);
   // English is drawn upper-case and letter-spaced (below), so size it against that, with room for the spacing.
   const subText = input.lang === 'en' ? MEDITATION_SUBTITLE.en.toUpperCase() : MEDITATION_SUBTITLE[input.lang];
   const subPx = fitFontSize(ctx, subText, subFont, 30, 18, input.lang === 'en' ? colW * 0.82 : colW);
@@ -3056,7 +3093,7 @@ export async function renderMeditationFrame(
   ctx.font = refFont(refPx);
   ctx.fillStyle = accent;
   y += (refPx * 1.3) / 2;
-  ctx.fillText(input.reference, colCX, y);
+  drawReferenceLine(ctx, refText, colCX, y, 'center', input.lang);
   y += (refPx * 1.3) / 2 + gaps.afterRef;
 
   ctx.font = subFont(subPx);
