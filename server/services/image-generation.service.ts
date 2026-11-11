@@ -150,6 +150,9 @@ interface GenerateBackgroundResult {
   // photo with no relation to the verse or prompt - see fetchPicsumFallback. Never written to the
   // cache, and surfaced to the client so it can say so instead of quietly shipping it.
   source: 'pollinations' | 'stock';
+  // True when the image came from one of the free fallback models (account out of pollen) - lower
+  // quality, so callers may not want to spend many review retries on it.
+  freeModel?: boolean;
 }
 
 const CACHE_DIR = path.join(process.cwd(), 'cache', 'images');
@@ -380,7 +383,8 @@ export async function generateBackground(req: GenerateBackgroundRequest): Promis
       if (!useKey) ({ buffer, contentType } = await cropLegacyWatermark(buffer, contentType));
       ({ buffer, contentType } = await fitToRequestedAspect(buffer, contentType, width, height));
       if (!req.skipCacheWrite) writeImageCache(req.cacheKey, buffer);
-      return { imageBase64: buffer.toString('base64'), contentType, width, height, cached: false, source: 'pollinations' };
+      const freeModel = !!useKey && keyedModels[modelIndex] !== getModel();
+      return { imageBase64: buffer.toString('base64'), contentType, width, height, cached: false, source: 'pollinations', freeModel };
     } catch (err) {
       pollinationsError = err;
       // Out of credits for this model, or a free model that is gone/refusing: try the next keyed model.

@@ -31,6 +31,10 @@ import type { BibleThemeKey } from '../../ai/themeMapper';
 export const verseRouter = Router();
 
 const BACKGROUND_REVIEW_MAX_ATTEMPTS = 5;
+// When images come from the free fallback models (Pollinations account out of pollen), retries rarely
+// do better and each costs ~15s of generation plus a review - stop after this many and use the best
+// candidate (or the figure-free fallback below).
+const FREE_MODEL_REVIEW_MAX_ATTEMPTS = 2;
 
 const BACKGROUND_RETRY_COMPOSITION_OVERRIDE = 'CRITICAL COMPOSITION OVERRIDE (RETRY ESCALATION): the entire subject is confined to a small tight group strictly within the BOTTOM 25% of the frame only. No head, hand, shoulder, building, tree, or tall silhouette crosses the 30% vertical line or above. The TOP 70% of the frame is COMPLETELY EMPTY — only plain open sky, soft blurred distant atmosphere, or smooth gradient. Negative constraint: no vertically-tall standing figure, no tower, no steeple, no object taller than 25% of frame height anywhere in the image. If a person is in the shot, the previous attempt failed because a full head-to-foot figure was merely positioned low instead of being cropped — fix this by re-framing the shot itself as a tight crop from the shoulders or waist down, with the head and face excluded from the frame entirely, rather than trying harder to position an uncropped figure.';
 
@@ -181,6 +185,10 @@ async function generateReviewedBackground(
       !review.proQuality && `pro-quality: ${review.qualityReason}`,
     ].filter(Boolean).join(' | ');
     console.warn(`Background rejected by review (attempt ${attempt + 1}/${BACKGROUND_REVIEW_MAX_ATTEMPTS}): ${failedChecks}`);
+    if (background.freeModel && attempt + 1 >= FREE_MODEL_REVIEW_MAX_ATTEMPTS) {
+      console.warn(`Background: free fallback image model in use; stopping after ${attempt + 1} attempts.`);
+      break;
+    }
   }
 
   // No AI candidate carried a Christian marker: try a theme-aligned figure-free scene instead -
