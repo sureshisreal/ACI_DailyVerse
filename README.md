@@ -75,6 +75,13 @@ ANTHROPIC_API_KEY=sk-ant-...
 # EDGE_TTS_VOICE_TA=ta-IN-PallaviNeural  EDGE_TTS_VOICE_TE=te-IN-ShrutiNeural  EDGE_TTS_VOICE_EN=en-GB-SoniaNeural
 # EDGE_TTS_RATE=-10%
 
+# Background music under every video - see assets/music/README.md:
+# BACKGROUND_MUSIC=on            # on (default) | off
+# BACKGROUND_MUSIC_LUFS=-34      # background loudness (narration is about -20)
+# BACKGROUND_MUSIC_DIR=assets/music   # your own royalty-free tracks; empty = built-in ambient pad
+# POLLINATIONS_FREE_MODELS=...   # free fallback image models when the account is out of pollen
+#                                # (default: FLUX.2 dev free, then SDXL Lightning free; "" disables)
+
 # Instagram auto-post (see server/services/instagramSync.service.ts): Shorts uploaded to YouTube from
 # this app are posted to Instagram as Reels once they turn public on YouTube. Needs an Instagram
 # professional account linked to a Facebook Page and a Meta app token - never the account password.

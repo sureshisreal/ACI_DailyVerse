@@ -282,6 +282,103 @@ function parseHighlight(raw: any, frameW: number, frameH: number): { layerImages
   return words.length ? { layerImagesBase64, words } : null;
 }
 
+// --- Background music under the narration ---
+// Tracks dropped into BACKGROUND_MUSIC_DIR (default assets/music: .mp3/.m4a/.wav/.ogg/.flac) are
+// picked at random per video. With none there, a built-in ambient pad is used: four warm chords
+// (D - Bm - G - A, 8s each, crossfaded) of soft detuned sine tones with a gentle swell, low-passed
+// and lightly echoed - synthesized here, so there is nothing to license. Either way the music is
+// loudness-normalised to a quiet background level, ducks further while the voice speaks, and fades
+// in/out with the video. BACKGROUND_MUSIC=off disables it; BACKGROUND_MUSIC_LUFS sets the level.
+const MUSIC_DIR = process.env.BACKGROUND_MUSIC_DIR || path.join(process.cwd(), 'assets', 'music');
+const MUSIC_EXTENSIONS = /\.(mp3|m4a|aac|wav|ogg|flac)$/i;
+const AMBIENT_PAD_PATH = path.join(process.cwd(), '.cache', 'music', 'ambient-pad-v1.wav');
+const AMBIENT_PAD_SECONDS = 360; // longer than any video; each video uses a random stretch of it
+let ambientPadPromise: Promise<string> | null = null;
+
+function backgroundMusicEnabled(): boolean {
+  return (process.env.BACKGROUND_MUSIC || 'on').toLowerCase() !== 'off';
+}
+
+function ambientPadExpression(): string {
+  const chords = [
+    [146.83, 220.0, 369.99, 440.0],  // D
+    [123.47, 185.0, 293.66, 369.99], // Bm
+    [98.0, 146.83, 246.94, 293.66],  // G
+    [110.0, 164.81, 277.18, 329.63], // A
+  ];
+  const period = 8, n = chords.length, cycle = period * n;
+  const terms = chords.map((notes, k) => {
+    // Circular distance (in chords) from this chord's centre: held for 6s, 2s linear crossfades.
+    const dist = `abs(mod(mod(t,${cycle})/${period}-${k + 0.5}+${n / 2},${n})-${n / 2})`;
+    const weight = `min(max((0.625-${dist})/0.25,0),1)`;
+    const tones = notes.map((f) => `sin(2*PI*${f}*t)+0.6*sin(2*PI*${(f * 1.004).toFixed(3)}*t)`).join('+');
+    return `${weight}*(${tones})`;
+  });
+  return `0.045*(0.8+0.2*sin(2*PI*0.07*t))*(${terms.join('+')})`;
+}
+
+// Renders the ambient pad once (a few seconds of CPU) and caches it on disk.
+function ensureAmbientPad(): Promise<string> {
+  if (fs.existsSync(AMBIENT_PAD_PATH)) return Promise.resolve(AMBIENT_PAD_PATH);
+  if (!ambientPadPromise) {
+    fs.mkdirSync(path.dirname(AMBIENT_PAD_PATH), { recursive: true });
+    const tmp = `${AMBIENT_PAD_PATH}.tmp.wav`;
+    ambientPadPromise = new Promise<string>((resolve, reject) => {
+      ffmpeg()
+        .input(`aevalsrc=exprs='${ambientPadExpression()}':s=24000:d=${AMBIENT_PAD_SECONDS}`)
+        .inputOptions(['-f', 'lavfi'])
+        .audioFilters(['lowpass=f=1600', 'aecho=0.8:0.6:180|360:0.3|0.2'])
+        .outputOptions(['-ac', '1'])
+        .output(tmp)
+        .on('end', () => { fs.renameSync(tmp, AMBIENT_PAD_PATH); resolve(AMBIENT_PAD_PATH); })
+        .on('error', (err) => { ambientPadPromise = null; reject(err); })
+        .run();
+    });
+  }
+  return ambientPadPromise;
+}
+
+async function pickBackgroundMusic(): Promise<{ path: string; offsetSec: number; loop: boolean }> {
+  try {
+    const tracks = fs.readdirSync(MUSIC_DIR).filter((f) => MUSIC_EXTENSIONS.test(f));
+    if (tracks.length) {
+      return { path: path.join(MUSIC_DIR, tracks[Math.floor(Math.random() * tracks.length)]), offsetSec: 0, loop: true };
+    }
+  } catch { /* no music folder - use the built-in pad */ }
+  const pad = await ensureAmbientPad();
+  return { path: pad, offsetSec: Math.floor(Math.random() * 120), loop: false };
+}
+
+// Mixes background music under the narration WAV at voicePath; writes the result to outPath.
+async function mixBackgroundMusic(voicePath: string, totalSec: number, outPath: string): Promise<void> {
+  const music = await pickBackgroundMusic();
+  const lufs = Number(process.env.BACKGROUND_MUSIC_LUFS) || -34;
+  const fadeOutStart = Math.max(0, totalSec - 2.5).toFixed(3);
+  const graph = [
+    // Both branches pinned to one sample format - sidechaincompress needs its inputs to match.
+    '[0:a]aformat=sample_fmts=fltp:sample_rates=24000:channel_layouts=mono,asplit=2[voice][key]',
+    `[1:a]aformat=sample_rates=24000:channel_layouts=mono,atrim=0:${totalSec.toFixed(3)},asetpts=PTS-STARTPTS,` +
+      `loudnorm=I=${lufs}:TP=-9:LRA=11,aformat=sample_fmts=fltp:sample_rates=24000:channel_layouts=mono,` +
+      `afade=t=in:st=0:d=1.5,afade=t=out:st=${fadeOutStart}:d=2.5[bed]`,
+    // Dip the music a little further whenever the voice is speaking.
+    '[bed][key]sidechaincompress=threshold=0.02:ratio=3:attack=80:release=900[ducked]',
+    // amix (ffmpeg 4.4) halves each input; volume=2 restores the narration's level.
+    '[voice][ducked]amix=inputs=2:duration=first:dropout_transition=0,volume=2[out]',
+  ].join(';');
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg()
+      .input(voicePath)
+      .input(music.path)
+      .inputOptions([...(music.loop ? ['-stream_loop', '-1'] : []), ...(music.offsetSec ? ['-ss', String(music.offsetSec)] : [])])
+      .complexFilter(graph, 'out')
+      .outputOptions(['-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le'])
+      .output(outPath)
+      .on('end', () => resolve())
+      .on('error', (err) => reject(err))
+      .run();
+  });
+}
+
 // Video pacing: silence around the narration, and the fade from/to black at each end.
 const VIDEO_AUDIO_LEAD_SEC = 0.7;
 const VIDEO_AUDIO_TAIL_SEC = 1.2;
@@ -1144,6 +1241,18 @@ app.post('/api/video/generate', async (req, res) => {
         padded.set(wav.samples, lead);
         wav = { samples: padded, sampleRate: wav.sampleRate };
         fs.writeFileSync(audioPath, encodeWavPcm16(padded, wav.sampleRate));
+      }
+
+      // Background music under the narration (see mixBackgroundMusic). Best-effort: on any failure
+      // the video simply has the narration alone. `music: false` in the request turns it off.
+      if (wav && backgroundMusicEnabled() && req.body.music !== false) {
+        const mixedPath = path.join(tempDir, 'audio-with-music.wav');
+        try {
+          await mixBackgroundMusic(audioPath, wav.samples.length / wav.sampleRate, mixedPath);
+          audioPath = mixedPath;
+        } catch (err: any) {
+          console.warn('[video] Background music skipped:', err?.message || err);
+        }
       }
 
       // Fade in/out - the only camera-adjacent effect kept, replacing the removed Ken Burns zoom

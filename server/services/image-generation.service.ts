@@ -77,6 +77,22 @@ function getModel(): string {
   return process.env.POLLINATIONS_MODEL || (getApiKey() ? DEFAULT_KEYED_MODEL : 'sana');
 }
 
+// Free community models on the keyed API (no pollen price on GEN_MODELS_URL), tried in order when
+// the account can't pay for the main model (out of pollen credits). Lower quality than the paid
+// default - FLUX.2 dev returns 1024x1024 whatever size is asked (cover-cropped later), SDXL
+// Lightning looks more illustrated - but each is generated from this verse's prompt and still goes
+// through the background review, which beats an unrelated stock photo. Verified working 2026-11-11.
+// Override with POLLINATIONS_FREE_MODELS (comma list; empty string disables).
+const DEFAULT_FREE_MODELS = 'community/scriptsnsenses-sys/flux-2-dev-free,community/scriptsnsenses-sys/sdxl-lightning-free';
+function getFreeModels(): string[] {
+  const raw = process.env.POLLINATIONS_FREE_MODELS ?? DEFAULT_FREE_MODELS;
+  return raw.split(',').map((m) => m.trim()).filter((m) => m && m !== getModel());
+}
+// After the account is refused for the main model, go straight to the free models for a while
+// instead of paying for a failing round trip on every image.
+const PAID_MODEL_COOLDOWN_MS = 30 * 60 * 1000;
+let paidModelRefusedUntil = 0;
+
 let warnedNoKey = false;
 
 // Pollinations' free anonymous tier allows only one in-flight request per IP - a second concurrent
@@ -289,7 +305,7 @@ async function fetchFromPollinations(url: URL, apiKey: string | null): Promise<{
       throw new PollinationsError(`Image generation service returned 429 (rate limited - this is a free shared service): ${body.slice(0, 200)}`, true);
     }
     if (res.status === 402) {
-      throw new PollinationsError(`Image generation service returned 402 (out of pollen credits for model ${getModel()} - top up at https://enter.pollinations.ai or choose a cheaper POLLINATIONS_MODEL): ${body.slice(0, 200)}`, false, !!apiKey);
+      throw new PollinationsError(`Image generation service returned 402 (out of pollen credits for model ${url.searchParams.get('model') || getModel()} - top up at https://enter.pollinations.ai or choose a cheaper POLLINATIONS_MODEL): ${body.slice(0, 200)}`, false, !!apiKey);
     }
     throw new PollinationsError(`Image generation service returned ${res.status}: ${body.slice(0, 200)}`, res.status >= 500);
   }
@@ -312,14 +328,24 @@ export async function generateBackground(req: GenerateBackgroundRequest): Promis
 
   const seed = req.seed ?? Math.floor(Math.random() * 1_000_000_000);
   const apiKey = getApiKey();
+  // Keyed models in the order to try: the main model, then the free fallbacks (skipping the main
+  // model while it's in its refusal cooldown).
+  const keyedModels = Date.now() < paidModelRefusedUntil && getFreeModels().length
+    ? getFreeModels()
+    : [getModel(), ...getFreeModels()];
+  let modelIndex = 0;
+  const keyedUrl = (model: string) => {
+    // Keyed API: key goes in the Authorization header only (see fetchFromPollinations), never the URL.
+    const u = new URL(`${GEN_IMAGE_BASE}/${encodeURIComponent(req.prompt)}`);
+    u.searchParams.set('model', model);
+    u.searchParams.set('width', String(width));
+    u.searchParams.set('height', String(height));
+    u.searchParams.set('seed', String(seed));
+    return u;
+  };
   let url: URL;
   if (apiKey) {
-    // Keyed API: key goes in the Authorization header only (see fetchFromPollinations), never the URL.
-    url = new URL(`${GEN_IMAGE_BASE}/${encodeURIComponent(req.prompt)}`);
-    url.searchParams.set('model', getModel());
-    url.searchParams.set('width', String(width));
-    url.searchParams.set('height', String(height));
-    url.searchParams.set('seed', String(seed));
+    url = keyedUrl(keyedModels[0]);
   } else {
     if (!warnedNoKey) {
       warnedNoKey = true;
@@ -338,6 +364,15 @@ export async function generateBackground(req: GenerateBackgroundRequest): Promis
       return { imageBase64: buffer.toString('base64'), contentType, width, height, cached: false, source: 'pollinations' };
     } catch (err) {
       pollinationsError = err;
+      // Out of credits for this model, or a free model that is gone/refusing: try the next keyed model.
+      if (useKey && err instanceof PollinationsError && (err.accountProblem || !err.retryable) && modelIndex < keyedModels.length - 1) {
+        if (keyedModels[modelIndex] === getModel() && err.accountProblem) paidModelRefusedUntil = Date.now() + PAID_MODEL_COOLDOWN_MS;
+        modelIndex++;
+        console.warn(`[image-generation] Model ${keyedModels[modelIndex - 1]} unavailable (${err.message.slice(0, 160)}); trying free model ${keyedModels[modelIndex]}.`);
+        url = keyedUrl(keyedModels[modelIndex]);
+        attempt--;
+        continue;
+      }
       if (useKey && err instanceof PollinationsError && err.accountProblem) {
         // Out of credits / bad key: switch to the keyless endpoint for the rest of this call's
         // attempts instead of giving up to an unrelated stock photo.
