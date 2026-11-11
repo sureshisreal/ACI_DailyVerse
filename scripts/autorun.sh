@@ -15,7 +15,7 @@ DATE="${2:-}"
 # The headless run needs Chromium; install it once if this codespace predates setup.sh adding it.
 if [ "$TASK" = "generate" ] && ! command -v chromium >/dev/null && [ -z "${CHROME_PATH:-}" ]; then
   echo "Installing Chromium for the headless run..."
-  sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq chromium >/dev/null || echo "Chromium install failed"
+  sudo apt-get update -qq >/dev/null && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chromium >/dev/null 2>&1 || echo "Chromium install failed"
 fi
 
 bash .devcontainer/start.sh >/dev/null 2>&1

@@ -25,7 +25,7 @@ if [ ! -x .edge-tts-venv/bin/edge-tts ]; then
 fi
 
 # Headless Chromium for the automatic daily run (server/services/autorun.service.ts).
-command -v chromium >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq chromium; } || echo "Chromium install failed - the daily run needs it"
+command -v chromium >/dev/null || { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chromium; } || echo "Chromium install failed - the daily run needs it"
 
 mkdir -p .piper-voices
 BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main
