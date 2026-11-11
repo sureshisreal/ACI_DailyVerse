@@ -170,7 +170,12 @@ async function tryModels(name: string, modelList: string[], attempt: (model: str
 }
 
 async function callModel(call: ModelCall): Promise<string> {
-  const chain = getProviderChain();
+  // Image (vision) calls skip Groq (its models here are text-only - each attempt would just 400) and,
+  // with OLLAMA_VISION=off (set on CPU-only Codespaces by .devcontainer/start.sh), Ollama too: a
+  // local vision call there takes minutes, and every vision caller (poster design, background
+  // review) has its own fallback, which is better than a multi-minute wait.
+  const chain = getProviderChain().filter((p) => !call.image || (p !== 'groq' && !(p === 'ollama' && (process.env.OLLAMA_VISION || '').toLowerCase() === 'off')));
+  if (!chain.length) throw new ProviderUnavailable('No configured model provider can take image input');
   const now = Date.now();
   // Providers not cooling down, in order; if every one is cooling down, try them all anyway rather
   // than fail without a single attempt.

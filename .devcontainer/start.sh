@@ -33,6 +33,8 @@ if command -v ollama >/dev/null; then
   # Ollama on CPU handles one request at a time; a generation run sends several at once, so a queued
   # request can wait behind others well past the app's default 10-minute limit.
   export OLLAMA_TIMEOUT_MS="${OLLAMA_TIMEOUT_MS:-1800000}"
+  # A local vision call takes minutes on this CPU; vision callers have their own fallbacks.
+  export OLLAMA_VISION="${OLLAMA_VISION:-off}"
 else
   export LLM_PROVIDER="${LLM_PROVIDER:-anthropic,gemini,groq}"
 fi
