@@ -16,7 +16,7 @@ const HISTORY_FILE = path.join(OUTPUT_DIR, 'history.json');
 // manually whenever that logic changes materially, so a manifest visibly shows what produced it.
 export const TTS_VERSION = 4; // Piper devotional pacing; Tamil is Indic-Parler only now (single voice, no MMS-TTS fallback, per explicit request), QA-gated with retry; v4 softened the Tamil voice description toward a gentler, more comforting delivery
 export const ALIGNMENT_VERSION = 1; // Whisper-tiny word-level alignment, used for /api/align-captions and TTS completeness/degeneracy QA
-export const VIDEO_VERSION = 3; // static frame + fade in/out, with an optional hook-card intro segment (no Ken Burns zoom, no word-by-word highlighter - removed per explicit request)
+export const VIDEO_VERSION = 4; // 4: landscape meditation frame (title block + poster card), silence around narration, 0.8s fades. 3: static frame + fade in/out, optional hook-card intro (no Ken Burns zoom, no word-by-word highlighter - removed per explicit request)
 
 type VideoLang = 'english' | 'tamil' | 'telugu';
 

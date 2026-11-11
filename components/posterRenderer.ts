@@ -2614,6 +2614,219 @@ export async function renderThumbnail(
 // background.png artifact itself, which should stay at the canonical 1080x1920 poster resolution.
 // A straight stretch (not cover-fit) is correct here since the source is already the exact same
 // aspect ratio, so nothing is cropped.
+// --- Meditation Video frame (1920x1080 landscape) ---
+// The Meditation Video is landscape (YouTube treats short vertical videos as Shorts), but the verse
+// poster is portrait. Fitting that poster into the wide frame left two near-black bars full of
+// blurred smears of the poster's own text. This instead composes a real landscape frame: the clean
+// background photo (no text) full-bleed and softly blurred, a title block on the left, and the
+// verse poster as a framed card on the right.
+export const MEDITATION_W = 1920;
+export const MEDITATION_H = 1080;
+
+const MEDITATION_TITLE: Record<'en' | 'ta' | 'te', string> = {
+  en: 'Daily Meditation',
+  ta: 'இன்றைய தியானம்',
+  te: 'నేటి ధ్యానం',
+};
+const MEDITATION_SUBTITLE: Record<'en' | 'ta' | 'te', string> = {
+  en: 'Verse  ·  Reflection  ·  Prayer',
+  ta: 'வசனம்  ·  தியானம்  ·  ஜெபம்',
+  te: 'వచనం  ·  ధ్యానం  ·  ప్రార్థన',
+};
+
+export interface MeditationFrameInput {
+  lang: 'en' | 'ta' | 'te';
+  reference: string; // in this language, e.g. "சங்கீதம் 23:1"
+  fontStyle?: FontStyleKey;
+  accentColor?: string;
+}
+
+function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// Largest font size (stepping down from maxPx) at which `text` fits on one line within maxWidth.
+function fitFontSize(ctx: CanvasRenderingContext2D, text: string, fontFor: (px: number) => string, maxPx: number, minPx: number, maxWidth: number): number {
+  for (let px = maxPx; px > minPx; px -= 2) {
+    ctx.font = fontFor(px);
+    if (ctx.measureText(text).width <= maxWidth) return px;
+  }
+  return minPx;
+}
+
+export async function renderMeditationFrame(
+  bgImg: HTMLImageElement | null,
+  logoImg: HTMLImageElement | null,
+  posterImg: HTMLImageElement,
+  input: MeditationFrameInput
+): Promise<Blob> {
+  await ensurePosterFontsPreloaded();
+  await document.fonts.ready;
+
+  const width = MEDITATION_W, height = MEDITATION_H;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+
+  // Backdrop: the clean background photo, cover-fit, blurred and dimmed so the card and title read
+  // clearly. Overscan by the blur radius so the blur doesn't pull in transparent edges.
+  ctx.fillStyle = '#0b0a09';
+  ctx.fillRect(0, 0, width, height);
+  if (bgImg) {
+    const blur = 26;
+    const ratio = Math.max((width + blur * 4) / bgImg.width, (height + blur * 4) / bgImg.height);
+    const bgW = bgImg.width * ratio, bgH = bgImg.height * ratio;
+    ctx.save();
+    ctx.filter = `blur(${blur}px) brightness(0.62) saturate(1.15)`;
+    ctx.drawImage(bgImg, (width - bgW) / 2, (height - bgH) / 2, bgW, bgH);
+    ctx.restore();
+  }
+  // Left-to-right shade behind the title block, plus a soft vignette.
+  const shade = ctx.createLinearGradient(0, 0, width, 0);
+  shade.addColorStop(0, 'rgba(6,5,4,0.72)');
+  shade.addColorStop(0.55, 'rgba(6,5,4,0.35)');
+  shade.addColorStop(1, 'rgba(6,5,4,0.15)');
+  ctx.fillStyle = shade;
+  ctx.fillRect(0, 0, width, height);
+  const vignette = ctx.createRadialGradient(width / 2, height / 2, height * 0.35, width / 2, height / 2, width * 0.75);
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, width, height);
+
+  // Poster card, right side: full poster at 9:16, rounded, with a deep shadow and a hairline border.
+  const cardH = Math.round(height * 0.86);
+  const cardW = Math.round(cardH * (posterImg.width / posterImg.height));
+  const cardX = Math.round(width * 0.93 - cardW);
+  const cardY = Math.round((height - cardH) / 2);
+  const radius = 26;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.65)';
+  ctx.shadowBlur = 70;
+  ctx.shadowOffsetY = 24;
+  roundedRectPath(ctx, cardX, cardY, cardW, cardH, radius);
+  ctx.fillStyle = '#000';
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  roundedRectPath(ctx, cardX, cardY, cardW, cardH, radius);
+  ctx.clip();
+  ctx.drawImage(posterImg, cardX, cardY, cardW, cardH);
+  ctx.restore();
+  ctx.save();
+  roundedRectPath(ctx, cardX + 0.75, cardY + 0.75, cardW - 1.5, cardH - 1.5, radius);
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+
+  // Title block, left side, centered in the space left of the card.
+  const fontStyle = input.fontStyle && FONT_STYLE_PRESETS[input.fontStyle] ? input.fontStyle : DEFAULT_FONT_STYLE;
+  const preset = FONT_STYLE_PRESETS[fontStyle];
+  const accent = input.accentColor || PALETTE.GOLD;
+  const colLeft = width * 0.07;
+  const colRight = cardX - width * 0.05;
+  const colW = colRight - colLeft;
+  const colCX = (colLeft + colRight) / 2;
+  const titleFamily = input.lang === 'en' ? preset.englishFontFamily : preset.primaryFontFamily[input.lang];
+  const titleFont = (px: number) => input.lang === 'en'
+    ? `${preset.englishItalic ? 'italic ' : ''}700 ${px}px ${titleFamily}`
+    : `700 ${px}px ${titleFamily}`;
+  const refFont = (px: number) => input.lang === 'en'
+    ? `${preset.englishItalic ? 'italic ' : ''}${preset.englishWeight} ${px}px ${titleFamily}`
+    : `400 ${px}px ${titleFamily}`;
+  const subFont = (px: number) => input.lang === 'en' ? `700 ${px}px Montserrat` : `700 ${px}px ${titleFamily}`;
+
+  const title = MEDITATION_TITLE[input.lang];
+  const titlePx = fitFontSize(ctx, title, titleFont, 104, 48, colW);
+  const refPx = fitFontSize(ctx, input.reference, refFont, 56, 28, colW);
+  // English is drawn upper-case and letter-spaced (below), so size it against that, with room for the spacing.
+  const subText = input.lang === 'en' ? MEDITATION_SUBTITLE.en.toUpperCase() : MEDITATION_SUBTITLE[input.lang];
+  const subPx = fitFontSize(ctx, subText, subFont, 30, 18, input.lang === 'en' ? colW * 0.82 : colW);
+
+  // Vertical rhythm: logo, title, flourish, reference, subtitle - as one centered stack.
+  const logoSize = logoImg ? 112 : 0;
+  const gaps = { afterLogo: 44, afterTitle: 40, afterFlourish: 40, afterRef: 34 };
+  const stackH = logoSize + (logoImg ? gaps.afterLogo : 0) + titlePx * 1.25 + gaps.afterTitle + 14 + gaps.afterFlourish + refPx * 1.3 + gaps.afterRef + subPx * 1.4;
+  let y = (height - stackH) / 2 - 20;
+
+  if (logoImg) {
+    const lx = colCX - logoSize / 2;
+    ctx.save();
+    ctx.shadowBlur = 24;
+    ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.fillStyle = 'rgba(10,10,12,0.85)';
+    ctx.beginPath();
+    ctx.arc(colCX, y + logoSize / 2, logoSize / 2 + 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(colCX, y + logoSize / 2, logoSize / 2, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(logoImg, lx, y, logoSize, logoSize);
+    ctx.restore();
+    y += logoSize + gaps.afterLogo;
+  }
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.85)';
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 2;
+
+  ctx.font = titleFont(titlePx);
+  ctx.fillStyle = PALETTE.WHITE;
+  y += (titlePx * 1.25) / 2;
+  ctx.fillText(title, colCX, y);
+  y += (titlePx * 1.25) / 2 + gaps.afterTitle;
+
+  drawFlourish(ctx, colCX, y + 7, Math.min(170, colW * 0.3), accent);
+  y += 14 + gaps.afterFlourish;
+
+  ctx.font = refFont(refPx);
+  ctx.fillStyle = accent;
+  y += (refPx * 1.3) / 2;
+  ctx.fillText(input.reference, colCX, y);
+  y += (refPx * 1.3) / 2 + gaps.afterRef;
+
+  ctx.font = subFont(subPx);
+  ctx.fillStyle = 'rgba(255,255,255,0.82)';
+  y += (subPx * 1.4) / 2;
+  if (input.lang === 'en') fillTextLetterSpaced(ctx, MEDITATION_SUBTITLE.en.toUpperCase(), colCX, y, 3);
+  else ctx.fillText(MEDITATION_SUBTITLE[input.lang], colCX, y);
+  ctx.restore();
+
+  // Ministry footer, bottom of the left column - same treatment as the posters' footer.
+  const footerY = height - 78;
+  const igSize = 36, igGap = 14;
+  ctx.save();
+  ctx.font = '700 22px Lato, Montserrat';
+  const ministryW = ctx.measureText(MINISTRY_NAME).width + 4 * (MINISTRY_NAME.length - 1);
+  const groupLeft = colCX - (igSize + igGap + ministryW) / 2;
+  drawInstagramIcon(ctx, groupLeft + igSize / 2, footerY, igSize);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.shadowColor = 'rgba(0,0,0,0.9)';
+  ctx.shadowBlur = 12;
+  fillTextLetterSpaced(ctx, MINISTRY_NAME, groupLeft + igSize + igGap + ministryW / 2, footerY, 4);
+  ctx.restore();
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Canvas toBlob failed'))), 'image/png');
+  });
+}
+
 export function upscaleToCanonical(img: HTMLImageElement): Promise<Blob> {
   const canvas = document.createElement('canvas');
   canvas.width = PORTRAIT_W;

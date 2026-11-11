@@ -25,7 +25,7 @@ import {
   type MeditationText,
   type VersePortion,
 } from '../services/verseApi';
-import { loadImage, base64ToImageDataUrl, renderVersePoster, renderCornerPoster, renderThumbnail, upscaleToCanonical, blobToBase64 } from './posterRenderer';
+import { loadImage, base64ToImageDataUrl, renderVersePoster, renderCornerPoster, renderThumbnail, renderMeditationFrame, upscaleToCanonical, blobToBase64 } from './posterRenderer';
 import { pcm16Base64ToWavBase64, combinePcm16PartsToWavBase64, pcm16Base64DurationSeconds, dataUrlToBlobUrl, blobUrlToBytes, bytesToBase64 } from './wavEncoder';
 
 // The channel's Posts page in YouTube Studio, where posters are posted manually (the YouTube API
@@ -777,10 +777,19 @@ const DailyVerseGenerator: React.FC = () => {
         let med = meditationByLang[VIDEO_LANG_CODE[lang.key]];
         const reflectionAudioPromise = synthesizeVerseAudio(buildReflectionText(lang.primaryLang, med.explanation, med.prayer));
         const verseAudioPromise = synthesizeVerseAudio(lang.text, lang.reference);
+        // A composed landscape frame (blurred clean background + title block + the verse poster as a
+        // framed card - see posterRenderer.ts's renderMeditationFrame) rather than the portrait
+        // poster letterboxed into the wide video frame.
         const posterBase64Promise = renderVersePoster(ctx.bgImg, ctx.logoImg, {
           primaryText: lang.posterText, primaryRef: lang.reference, primaryLang: lang.primaryLang,
           fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor,
-        }).then(blobToBase64);
+        })
+          .then((posterBlob) => loadImage(URL.createObjectURL(posterBlob)))
+          .then((posterImg) => renderMeditationFrame(ctx.bgImg, ctx.logoImg, posterImg, {
+            lang: lang.primaryLang, reference: lang.reference,
+            fontStyle: ctx.analysis.fontStyle, accentColor: ctx.analysis.accentColor,
+          }))
+          .then(blobToBase64);
         const youtubePromise = buildYouTubePackage(ctx, lang, filenamePrefix, verse.reference);
         // Settled on its own so an early throw below (e.g. reflection audio failing) never leaves
         // these as unhandled rejections.
@@ -844,7 +853,7 @@ const DailyVerseGenerator: React.FC = () => {
         // inside the wider frame with a blurred pillarbox rather than cropping it, which a plain
         // 'cover' fit would do almost entirely to a portrait source in a landscape target.
         const videoResp = await generateNarrationVideo(posterBase64, wavBase64, {
-          width: MEDITATION_VIDEO_WIDTH, height: MEDITATION_VIDEO_HEIGHT, fitMode: 'contain-blur',
+          width: MEDITATION_VIDEO_WIDTH, height: MEDITATION_VIDEO_HEIGHT, fitMode: 'cover', // frame is already 1920x1080
         });
         results[lang.key] = {
           kind: 'longform',

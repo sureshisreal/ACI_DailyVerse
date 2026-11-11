@@ -166,6 +166,25 @@ async function alignWithWhisper(samples16k: Float32Array, words: string[], lang:
 // /api/video/generate's audioBase64 arrives in - see wavEncoder.ts's wrapPcm16AsWav) by walking its
 // chunks rather than assuming the minimal 44-byte header, so a 'fmt '/'data' chunk order or size
 // this app didn't itself produce still decodes correctly.
+// Mono 16-bit PCM WAV - the inverse of decodeWavPcm16 below.
+function encodeWavPcm16(samples: Float32Array, sampleRate: number): Buffer {
+  const data = Buffer.alloc(samples.length * 2);
+  for (let i = 0; i < samples.length; i++) {
+    data.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768))), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4); header.write('WAVE', 8);
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24); header.writeUInt32LE(sampleRate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write('data', 36); header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
+
+// Video pacing: silence around the narration, and the fade from/to black at each end.
+const VIDEO_AUDIO_LEAD_SEC = 0.7;
+const VIDEO_AUDIO_TAIL_SEC = 1.2;
+const VIDEO_FADE_SEC = 0.8;
+
 function decodeWavPcm16(buffer: Buffer): { samples: Float32Array; sampleRate: number } {
   if (buffer.length < 12 || buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
     throw new Error('Not a valid WAV buffer');
@@ -979,6 +998,17 @@ app.post('/api/video/generate', async (req, res) => {
         console.warn('WAV decode failed, skipping fade:', err?.message || err);
       }
 
+      // A breath of silence before the first word and after the last: the picture finishes fading
+      // in before the voice starts, and the last word isn't clipped by the fade-out / end of video.
+      if (wav) {
+        const lead = Math.round(VIDEO_AUDIO_LEAD_SEC * wav.sampleRate);
+        const tail = Math.round(VIDEO_AUDIO_TAIL_SEC * wav.sampleRate);
+        const padded = new Float32Array(lead + wav.samples.length + tail);
+        padded.set(wav.samples, lead);
+        wav = { samples: padded, sampleRate: wav.sampleRate };
+        fs.writeFileSync(audioPath, encodeWavPcm16(padded, wav.sampleRate));
+      }
+
       // Fade in/out - the only camera-adjacent effect kept, replacing the removed Ken Burns zoom
       // (the word-by-word highlighter that used to render here was removed per explicit request -
       // see /api/align-captions above for the Whisper alignment it used to depend on, still used
@@ -987,7 +1017,7 @@ app.post('/api/video/generate', async (req, res) => {
       let fadeDur = 0;
       if (wav) {
         totalDuration = wav.samples.length / wav.sampleRate;
-        const candidate = Math.min(0.5, totalDuration / 4);
+        const candidate = Math.min(VIDEO_FADE_SEC, totalDuration / 4);
         if (candidate > 0.05) fadeDur = candidate;
       }
 
